@@ -1,0 +1,64 @@
+{
+  "name": "nukejs",
+  "version": "0.0.2",
+  "description": "A minimal, opinionated full-stack React framework on Node.js that server-renders everything and hydrates only interactive parts.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "bin": {
+    "nuke": "./bin/index.mjs"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "scripts": {
+    "build": "npx tsx src/builder.ts",
+    "dev": "cd playground && node ../bin/index.mjs dev",
+    "pack": "npm run build && npm pack",
+    "test": "npx jest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nuke-js/nukejs.git"
+  },
+  "keywords": [
+    "react",
+    "nodejs",
+    "fullstack",
+    "framework",
+    "server-side-rendering",
+    "ssr",
+    "nukejs",
+    "nuke"
+  ],
+  "author": "kav3",
+  "license": "MIT",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/nuke-js/nukejs/issues"
+  },
+  "homepage": "https://github.com/nuke-js/nukejs#readme",
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^25.2.3",
+    "@types/react-dom": "^19.2.3",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.6",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "esbuild": "^0.27.3",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "workspaces": [
+    "playground"
+  ]
+}
