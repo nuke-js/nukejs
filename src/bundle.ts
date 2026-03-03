@@ -36,7 +36,7 @@
  * there's no race between the event firing and the listener being registered.
  */
 export function setupLocationChangeMonitor(): void {
-  const originalPushState    = window.history.pushState.bind(window.history);
+  const originalPushState = window.history.pushState.bind(window.history);
   const originalReplaceState = window.history.replaceState.bind(window.history);
 
   const dispatch = (href?: any) =>
@@ -68,9 +68,9 @@ type ClientDebugLevel = 'silent' | 'error' | 'info' | 'verbose';
 function makeLogger(level: ClientDebugLevel) {
   return {
     verbose: (...a: any[]) => { if (level === 'verbose') console.log(...a); },
-    info:    (...a: any[]) => { if (level === 'verbose' || level === 'info') console.log(...a); },
-    warn:    (...a: any[]) => { if (level === 'verbose' || level === 'info') console.warn(...a); },
-    error:   (...a: any[]) => { if (level !== 'silent') console.error(...a); },
+    info: (...a: any[]) => { if (level === 'verbose' || level === 'info') console.log(...a); },
+    warn: (...a: any[]) => { if (level === 'verbose' || level === 'info') console.warn(...a); },
+    error: (...a: any[]) => { if (level !== 'silent') console.error(...a); },
   };
 }
 
@@ -84,7 +84,7 @@ type SerializedNode =
   | number
   | boolean
   | SerializedNode[]
-  | { __re: 'html';   tag: string; props: Record<string, any> }   // native DOM element
+  | { __re: 'html'; tag: string; props: Record<string, any> }   // native DOM element
   | { __re: 'client'; componentId: string; props: Record<string, any> } // client component
   | Record<string, any>;                                             // plain object
 
@@ -117,7 +117,7 @@ async function reconstructElement(node: SerializedNode, mods: ModuleMap): Promis
 
   // Client component — look up the loaded module by ID.
   if ((node as any).__re === 'client') {
-    const n    = node as { __re: 'client'; componentId: string; props: Record<string, any> };
+    const n = node as { __re: 'client'; componentId: string; props: Record<string, any> };
     const Comp = mods.get(n.componentId);
     if (!Comp) return null;
     const React = await import('react');
@@ -126,7 +126,7 @@ async function reconstructElement(node: SerializedNode, mods: ModuleMap): Promis
 
   // Native HTML element (e.g. <div>, <span>).
   if ((node as any).__re === 'html') {
-    const n     = node as { __re: 'html'; tag: string; props: Record<string, any> };
+    const n = node as { __re: 'html'; tag: string; props: Record<string, any> };
     const React = await import('react');
     return React.default.createElement(n.tag, await reconstructProps(n.props, mods));
   }
@@ -169,7 +169,7 @@ async function loadModules(
     ids.map(async (id) => {
       try {
         const url = `/__client-component/${id}.js` + (bust ? `?t=${bust}` : '');
-        const m   = await import(url);
+        const m = await import(url);
         mods.set(id, m.default);
         log.verbose('✓ Loaded:', id);
       } catch (err) {
@@ -209,7 +209,7 @@ async function mountNodes(
     // Skip nested markers — the outer component owns its children.
     if (node.parentElement?.closest('[data-hydrate-id]')) continue;
 
-    const id   = node.getAttribute('data-hydrate-id')!;
+    const id = node.getAttribute('data-hydrate-id')!;
     const Comp = mods.get(id);
     if (!Comp) { log.warn('No module for', id); continue; }
 
@@ -252,12 +252,28 @@ async function mountNodes(
  *
  * Falls back to a full page reload if anything goes wrong.
  */
+/**
+ * Syncs attributes from a parsed element onto the live document element.
+ * Adds/updates attributes present in `next`, and removes any that were set
+ * on `live` but are absent in `next` (so stale bodyAttrs/htmlAttrs are cleared).
+ */
+function syncAttrs(live: Element, next: Element): void {
+  // Apply / update attributes from the new document.
+  for (const { name, value } of Array.from(next.attributes)) {
+    live.setAttribute(name, value);
+  }
+  // Remove attributes that no longer exist in the new document.
+  for (const { name } of Array.from(live.attributes)) {
+    if (!next.hasAttribute(name)) live.removeAttribute(name);
+  }
+}
+
 function setupNavigation(log: ReturnType<typeof makeLogger>): void {
   window.addEventListener('locationchange', async ({ detail: { href, hmr } }: any) => {
     try {
       // Append ?__hmr=1 for HMR-triggered reloads so SSR skips the slower
       // client-component renderToString path.
-      const fetchUrl  = hmr
+      const fetchUrl = hmr
         ? href + (href.includes('?') ? '&' : '?') + '__hmr=1'
         : href;
 
@@ -267,9 +283,9 @@ function setupNavigation(log: ReturnType<typeof makeLogger>): void {
         return;
       }
 
-      const parser  = new DOMParser();
-      const doc     = parser.parseFromString(await response.text(), 'text/html');
-      const newApp  = doc.getElementById('app');
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(await response.text(), 'text/html');
+      const newApp = doc.getElementById('app');
       const currApp = document.getElementById('app');
       if (!newApp || !currApp) return;
 
@@ -282,13 +298,19 @@ function setupNavigation(log: ReturnType<typeof makeLogger>): void {
 
       // Update the runtime data blob so subsequent navigations use the new page's
       // client component IDs.
-      const newDataEl  = doc.getElementById('__n_data');
+      const newDataEl = doc.getElementById('__n_data');
       const currDataEl = document.getElementById('__n_data');
       if (newDataEl && currDataEl) currDataEl.textContent = newDataEl.textContent;
 
       // Update <title>.
       const newTitle = doc.querySelector('title');
       if (newTitle) document.title = newTitle.textContent ?? '';
+
+      // Sync <html> attributes (e.g. lang, class, style from useHtml({ htmlAttrs })).
+      syncAttrs(document.documentElement, doc.documentElement);
+
+      // Sync <body> attributes (e.g. style, class from useHtml({ bodyAttrs })).
+      syncAttrs(document.body, doc.body);
 
       const navData = JSON.parse(currDataEl?.textContent ?? '{}') as RuntimeData;
       log.info('🔄 Route →', href, '— mounting', navData.hydrateIds?.length ?? 0, 'component(s)');
@@ -314,10 +336,10 @@ export interface RuntimeData {
   hydrateIds: string[];
   /** All client component IDs reachable from this page, including layouts.
    *  Pre-loaded so SPA navigations to related pages feel instant. */
-  allIds:     string[];
-  url:        string;
-  params:     Record<string, any>;
-  debug:      ClientDebugLevel;
+  allIds: string[];
+  url: string;
+  params: Record<string, any>;
+  debug: ClientDebugLevel;
 }
 
 /**
