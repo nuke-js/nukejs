@@ -847,7 +847,7 @@ export async function bundleClientComponents(
       prerendered.set(id, renderToString(createElement(Component, {})));
       console.log(`  prerendered       ${id}`);
     } catch (e) {
-      console.warn(`  [SSR prerender failed for ${id}]`, e);
+      //console.warn(`  [SSR prerender failed for ${id}]`, e);
       prerendered.set(id, '');
     } finally {
       if (fs.existsSync(ssrTmp)) fs.unlinkSync(ssrTmp);
