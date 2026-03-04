@@ -25,6 +25,13 @@ import type { ServerResponse } from 'http';
 import { log } from './logger';
 import { getComponentById } from './component-analyzer';
 
+// ─── Bundle caches ────────────────────────────────────────────────────────────
+
+// Cache Promises (not just results) so concurrent requests share one build
+// instead of each spawning their own esbuild process.
+let reactBundlePromise: Promise<string> | null = null;
+let nukeBundlePromise: Promise<string> | null = null;
+
 // ─── Client component bundle ──────────────────────────────────────────────────
 
 /**
@@ -39,13 +46,13 @@ import { getComponentById } from './component-analyzer';
 export async function bundleClientComponent(filePath: string): Promise<string> {
   const result = await build({
     entryPoints: [filePath],
-    bundle:      true,
-    format:      'esm',
-    platform:    'browser',
-    write:       false,
-    jsx:         'automatic',
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    write: false,
+    jsx: 'automatic',
     // Keep React external — resolved by the importmap to /__react.js
-    external:    ['react', 'react-dom/client', 'react/jsx-runtime'],
+    external: ['react', 'react-dom/client', 'react/jsx-runtime'],
   });
   return result.outputFiles[0].text;
 }
@@ -91,11 +98,10 @@ export async function serveClientComponentBundle(
 export async function serveReactBundle(res: ServerResponse): Promise<void> {
   log.verbose('Bundling React runtime');
 
-  const result = await build({
-    stdin: {
-      // Re-export every public hook and ReactDOM entrypoint so client code can
-      // import from 'react' or 'react-dom/client' and get the same object.
-      contents: `
+  if (!reactBundlePromise) {
+    reactBundlePromise = build({
+      stdin: {
+        contents: `
         import React, {
           useState, useEffect, useContext, useReducer, useCallback, useMemo,
           useRef, useImperativeHandle, useLayoutEffect, useDebugValue,
@@ -116,25 +122,24 @@ export async function serveReactBundle(res: ServerResponse): Promise<void> {
         };
         export default React;
       `,
-      loader: 'ts',
-    },
-    bundle:      true,
-    write:       false,
-    treeShaking: true,
-    minify:      false,
-    format:      'esm',
-    jsx:         'automatic',
-    // Resolve 'react' and 'react-dom' to the project's installed copies,
-    // not to whatever esbuild would find relative to its own location.
-    alias: {
-      react:       path.dirname(fileURLToPath(import.meta.resolve('react/package.json'))),
-      'react-dom': path.dirname(fileURLToPath(import.meta.resolve('react-dom/package.json'))),
-    },
-    define: { 'process.env.NODE_ENV': '"development"' },
-  });
+        loader: 'ts',
+      },
+      bundle: true,
+      write: false,
+      treeShaking: true,
+      minify: false,
+      format: 'esm',
+      jsx: 'automatic',
+      alias: {
+        react: path.dirname(fileURLToPath(import.meta.resolve('react/package.json'))),
+        'react-dom': path.dirname(fileURLToPath(import.meta.resolve('react-dom/package.json'))),
+      },
+      define: { 'process.env.NODE_ENV': '"development"' },
+    }).then(r => r.outputFiles[0].text);
+  }
 
   res.setHeader('Content-Type', 'application/javascript');
-  res.end(result.outputFiles[0].text);
+  res.end(await reactBundlePromise);
 }
 
 // ─── NukeJS runtime bundle ────────────────────────────────────────────────────
@@ -150,19 +155,19 @@ export async function serveReactBundle(res: ServerResponse): Promise<void> {
 export async function serveNukeBundle(res: ServerResponse): Promise<void> {
   log.verbose('Bundling nuke runtime');
 
-  const dir    = path.dirname(fileURLToPath(import.meta.url));
-  // In the compiled dist/ directory the file is .js; in dev source it is .ts.
-  const entry  = path.join(dir, `bundle.${dir.endsWith('dist') ? 'js' : 'ts'}`);
-
-  const result = await build({
-    entryPoints: [entry],
-    write:       false,
-    format:      'esm',
-    minify:      true,
-    bundle:      true,
-    external:    ['react', 'react-dom/client'],
-  });
+  if (!nukeBundlePromise) {
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    const entry = path.join(dir, `bundle.${dir.endsWith('dist') ? 'js' : 'ts'}`);
+    nukeBundlePromise = build({
+      entryPoints: [entry],
+      write: false,
+      format: 'esm',
+      minify: true,
+      bundle: true,
+      external: ['react', 'react-dom/client'],
+    }).then(r => r.outputFiles[0].text);
+  }
 
   res.setHeader('Content-Type', 'application/javascript');
-  res.end(result.outputFiles[0].text);
+  res.end(await nukeBundlePromise);
 }

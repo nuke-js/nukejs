@@ -27,6 +27,11 @@ import { fileURLToPath } from 'url';
 import { hmrClients } from './hmr';
 import { getMimeType } from './utils';
 
+// Cache the compiled HMR bundle Promise so esbuild only runs once per server lifetime.
+// Caching the Promise (not just the result) prevents a race condition where multiple
+// concurrent requests all see null and each kick off their own build.
+let hmrBundlePromise: Promise<string> | null = null;
+
 // Absolute path to the static public directory.
 // Files here are served at their path relative to this directory.
 const PUBLIC_DIR = path.resolve('./app/public');
@@ -74,37 +79,53 @@ export default async function middleware(
   // ── HMR client script ───────────────────────────────────────────────────────
   // Builds hmr-bundle.ts on demand so the browser always gets the latest version.
   if (rawUrl === '/__hmr.js') {
-    const dir   = path.dirname(fileURLToPath(import.meta.url));
-    // Resolve to .js in dist/ or .ts when running from source.
-    const entry = path.join(dir, `hmr-bundle.${dir.endsWith('dist') ? 'js' : 'ts'}`);
-
-    const result = await build({
-      entryPoints: [entry],
-      write:       false,
-      format:      'esm',
-      minify:      true,
-      bundle:      true,
-      // React is not used in the HMR client, but excluding it prevents esbuild
-      // from inlining it if any transitive import references react.
-      external:    ['react', 'react-dom/client', 'react/jsx-runtime'],
-    });
+    if (!hmrBundlePromise) {
+      const dir   = path.dirname(fileURLToPath(import.meta.url));
+      const entry = path.join(dir, `hmr-bundle.${dir.endsWith('dist') ? 'js' : 'ts'}`);
+      hmrBundlePromise = build({
+        entryPoints: [entry],
+        write:       false,
+        format:      'esm',
+        minify:      true,
+        bundle:      true,
+        external:    ['react', 'react-dom/client', 'react/jsx-runtime'],
+      }).then(r => r.outputFiles[0].text);
+    }
 
     res.setHeader('Content-Type', 'application/javascript');
-    res.end(result.outputFiles[0].text);
-    return; // Prevent fall-through to the SSE block below.
+    res.end(await hmrBundlePromise);
+    return;
   }
 
   // ── HMR SSE stream ──────────────────────────────────────────────────────────
   // Long-lived connection tracked in hmrClients so hmr.ts can broadcast events
   // to all connected browsers when a file changes.
   if (rawUrl === '/__hmr') {
+    // Each full-page reload opens a new SSE connection before the old one has
+    // fully closed. After ~6 reloads the browser's connection limit is exhausted
+    // and it can't make any new requests — the server appears to hang.
+    // Fix: allow up to 5 SSE connections per IP; when a 6th arrives, destroy
+    // the oldest one from that IP to free a slot before accepting the new one.
+    const MAX_SSE_PER_IP = 5;
+    const remoteAddr = req.socket?.remoteAddress;
+    if (remoteAddr) {
+      const fromSameIp = [...hmrClients].filter(
+        c => (c as any).socket?.remoteAddress === remoteAddr
+      );
+      if (fromSameIp.length >= MAX_SSE_PER_IP) {
+        // Drop the oldest (first in insertion order).
+        const oldest = fromSameIp[0];
+        oldest.destroy();
+        hmrClients.delete(oldest);
+      }
+    }
+
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.flushHeaders();
 
-    // Send an immediate 'connected' event so the client knows the stream is live.
     res.write('data: {"type":"connected"}\n\n');
 
     hmrClients.add(res);
