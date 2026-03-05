@@ -1,4 +1,6 @@
-# ☢️ NukeJS
+[![NukeJS Banner](.github/banner.png)](https://nukejs.com)
+
+# NukeJS
 
 A **minimal**, opinionated full-stack React framework on Node.js that server-renders everything and hydrates only interactive parts.
 
