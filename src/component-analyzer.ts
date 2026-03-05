@@ -107,7 +107,7 @@ export function analyzeComponent(filePath: string, pagesDir: string): ComponentI
 // ─── Import extraction ────────────────────────────────────────────────────────
 
 /**
- * Parses `import … from '…'` statements in a file and returns a list of
+ * Parses `import … from '…'` and `export … from '…'` statements in a file and returns a list of
  * resolved absolute paths for all *local* imports (relative or absolute paths).
  *
  * Non-local specifiers (npm packages) are skipped, except `nukejs` itself —
@@ -122,7 +122,7 @@ function extractImports(filePath: string): string[] {
   const imports: string[] = [];
 
   const importRegex =
-    /import\s+(?:(?:\{[^}]*\}|\*\s+as\s+\w+|\w+)\s+from\s+)?['"]([^'"]+)['"]/g;
+    /(?:import|export)\s+(?:(?:\{[^}]*\}|\*\s+as\s+\w+|\w+)\s+from\s+)?['"]([^'"]+)['"]/g;
   let match: RegExpExecArray | null;
 
   while ((match = importRegex.exec(content)) !== null) {
@@ -146,13 +146,33 @@ function extractImports(filePath: string): string[] {
 
     // Resolve to an absolute path and add common extensions if needed.
     let resolved = path.resolve(dir, importPath);
-    if (!fs.existsSync(resolved)) {
-      for (const ext of ['.tsx', '.ts', '.jsx', '.js']) {
+    const EXTS = ['.tsx', '.ts', '.jsx', '.js'] as const;
+
+    const isFile = (p: string) =>
+      fs.existsSync(p) && fs.statSync(p).isFile();
+
+    if (!isFile(resolved)) {
+      let found = false;
+
+      // 1. Try appending an extension  (e.g. './Button' → './Button.tsx')
+      for (const ext of EXTS) {
         const candidate = resolved + ext;
-        if (fs.existsSync(candidate)) { resolved = candidate; break; }
+        if (isFile(candidate)) { resolved = candidate; found = true; break; }
       }
+
+      // 2. If resolved is a directory, look for an index file inside it
+      //    (e.g. './components' → './components/index.tsx')
+      if (!found && fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+        for (const ext of EXTS) {
+          const candidate = path.join(resolved, `index${ext}`);
+          if (isFile(candidate)) { resolved = candidate; found = true; break; }
+        }
+      }
+
+      if (!found) continue; // unresolvable import — skip silently
     }
-    if (fs.existsSync(resolved)) imports.push(resolved);
+
+    imports.push(resolved);
   }
 
   return imports;

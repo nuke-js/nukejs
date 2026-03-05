@@ -26,8 +26,12 @@ import fs   from 'fs';
 // ─── Route file discovery ─────────────────────────────────────────────────────
 
 /**
- * Recursively collects all .ts/.tsx files in `dir`, returning paths relative to
- * `baseDir` without the file extension.
+ * Recursively collects all routable .ts/.tsx files in `dir`, returning paths
+ * relative to `baseDir` without the file extension.
+ *
+ * layout.tsx files are excluded — they wrap pages but are never routes
+ * themselves.  This mirrors the filter in collectServerPages() so dev-mode
+ * route matching behaves identically to the production build.
  *
  * Example output: ['index', 'users/index', 'users/[id]', 'blog/[...slug]']
  */
@@ -40,6 +44,8 @@ export function findAllRoutes(dir: string, baseDir: string = dir): string[] {
     if (entry.isDirectory()) {
       routes.push(...findAllRoutes(fullPath, baseDir));
     } else if (entry.name.endsWith('.tsx') || entry.name.endsWith('.ts')) {
+      const stem = entry.name.replace(/\.(tsx|ts)$/, '');
+      if (stem === 'layout') continue;
       routes.push(path.relative(baseDir, fullPath).replace(/\.(tsx|ts)$/, ''));
     }
   }
@@ -157,6 +163,7 @@ function isWithinBase(baseDir: string, filePath: string): boolean {
  * Steps:
  *   1. Reject '..' or '.' path segments (path traversal guard).
  *   2. Try an exact file match (e.g. /about → baseDir/about.tsx).
+ *      layout.tsx is explicitly excluded from exact matching.
  *   3. Sort all discovered routes by specificity (most specific first).
  *   4. Return the first dynamic route that matches.
  *
@@ -176,10 +183,11 @@ export function matchRoute(
   // For the root URL, look for an index file.
   const segments = rawSegments.length === 0 ? ['index'] : rawSegments;
 
-  // 1. Exact match: /about → about.tsx
+  // 1. Exact match: /about → about.tsx — never resolve to a layout file.
   const exactPath = path.join(baseDir, ...segments) + extension;
+  const exactStem = path.basename(exactPath, extension);
   if (!isWithinBase(baseDir, exactPath)) return null;
-  if (fs.existsSync(exactPath)) {
+  if (exactStem !== 'layout' && fs.existsSync(exactPath)) {
     return { filePath: exactPath, params: {}, routePattern: segments.join('/') };
   }
 

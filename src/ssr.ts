@@ -6,7 +6,7 @@
  *   1. Match the incoming URL to a page file in app/pages using the file-system
  *      router.
  *   2. Discover the layout chain (layout.tsx files from root to the page dir).
- *   3. Dynamically import the page and layout modules (always fresh via ?t=Date.now()).
+ *   3. Dynamically import the page and layout modules (always fresh via tsImport).
  *   4. Walk the import tree to discover all "use client" components.
  *   5. Render the wrapped element tree with the async renderer.
  *   6. Flush the html-store (title, meta, link, script, style tags).
@@ -23,9 +23,15 @@
  * HMR fast path:
  *   When the request URL contains `__hmr=1` (added by the HMR client during
  *   soft navigation), the renderer skips client-component renderToString
- *   (ctx.skipClientSSR = true).  This significantly speeds up HMR reloads
- *   because the client already has the DOM in place and only needs the new
- *   server-rendered markup.
+ *   (ctx.skipClientSSR = true).  This speeds up HMR reloads because the
+ *   client already has the DOM in place and only needs fresh server markup.
+ *
+ * Head tag sentinels:
+ *   Every useHtml()-generated <meta>, <link>, <style>, and <script> tag is
+ *   wrapped in <!--n-head-->…<!--/n-head--> comment sentinels.  The client
+ *   runtime uses these to diff and sync head tags on SPA navigation without
+ *   touching permanent tags (charset, viewport, importmap, runtime script).
+ *   Pages with no useHtml head tags emit no sentinels.
  */
 
 import path from 'path';
@@ -55,8 +61,8 @@ import {
  * Wraps a page element in its layout chain, outermost-first.
  * Each layout receives `{ children: innerElement }` as props.
  *
- * Cache-busting (?t=Date.now()) forces Node to re-import the module on every
- * request in dev, so editing a layout is reflected immediately.
+ * tsImport creates a fresh isolated module namespace per call so edits to
+ * layouts are reflected immediately without a server restart.
  */
 async function wrapWithLayouts(pageElement: any, layoutPaths: string[]): Promise<any> {
   let element = pageElement;
@@ -84,7 +90,7 @@ function toClientDebugLevel(level: DebugLevel): string {
   return 'silent';
 }
 
-// ─── HTML attribute serialization ─────────────────────────────────────────────
+// ─── HTML serialization helpers ───────────────────────────────────────────────
 
 function escapeAttr(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
@@ -106,14 +112,12 @@ function openTag(tag: string, attrs: Record<string, string | undefined>): string
 
 // ─── Head tag renderers ───────────────────────────────────────────────────────
 
-/** httpEquiv → http-equiv for proper HTML attribute serialization. */
 function metaKey(k: string): string {
   return k === 'httpEquiv' ? 'http-equiv' : k;
 }
 
-/** hrefLang → hreflang, crossOrigin → crossorigin. */
 function linkKey(k: string): string {
-  if (k === 'hrefLang')   return 'hreflang';
+  if (k === 'hrefLang')    return 'hreflang';
   if (k === 'crossOrigin') return 'crossorigin';
   return k;
 }
@@ -150,6 +154,22 @@ function renderStyleTag(tag: StyleTag): string {
   return `  <style${media}>${tag.content ?? ''}</style>`;
 }
 
+/**
+ * Renders all useHtml()-sourced head tags wrapped in <!--n-head--> sentinels.
+ * Returns an empty array when none of the stores have any tags (no sentinels
+ * emitted for pages that don't call useHtml).
+ */
+function renderManagedHeadTags(store: HtmlStore): string[] {
+  const tags = [
+    ...store.meta.map(renderMetaTag),
+    ...store.link.map(renderLinkTag),
+    ...store.style.map(renderStyleTag),
+    ...store.script.map(renderScriptTag),
+  ];
+  if (tags.length === 0) return [];
+  return ['  <!--n-head-->', ...tags, '  <!--/n-head-->'];
+}
+
 // ─── Main SSR handler ─────────────────────────────────────────────────────────
 
 /**
@@ -166,7 +186,6 @@ export async function serverSideRender(
   pagesDir: string,
   isDev = false,
 ): Promise<void> {
-  // Strip __hmr=1 flag from the URL before routing; set skipClientSSR accordingly.
   const skipClientSSR = url.includes('__hmr=1');
   const cleanUrl      = url.split('?')[0];
 
@@ -183,11 +202,9 @@ export async function serverSideRender(
   log.verbose(`SSR ${cleanUrl} -> ${path.relative(process.cwd(), filePath)}`);
 
   // ── Module import ───────────────────────────────────────────────────────────
-  // ?t=Date.now() bypasses Node's module cache so edits are reflected immediately.
+  // tsImport bypasses Node's ESM module cache entirely so edits are reflected
+  // immediately on every request in dev.
   const layoutPaths = findLayoutsForRoute(filePath, pagesDir);
-  // tsImport creates a fresh isolated module namespace per call — all static
-  // imports within the page (layouts, server components, utilities) are loaded
-  // fresh from disk, bypassing Node's ESM module cache entirely.
   const { default: PageComponent } = await tsImport(
     pathToFileURL(filePath).href,
     { parentURL: import.meta.url },
@@ -198,8 +215,7 @@ export async function serverSideRender(
   );
 
   // ── Client component discovery ──────────────────────────────────────────────
-  // Walk the import tree for both the page and its layout chain to collect every
-  // "use client" component that might be rendered.
+  // Walk the import tree for both the page and its layout chain.
   const registry = new Map<string, string>();
   for (const [id, p] of findClientComponentsInTree(filePath, pagesDir))
     registry.set(id, p);
@@ -227,18 +243,14 @@ export async function serverSideRender(
     '  <meta charset="utf-8" />',
     '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
     `  <title>${escapeAttr(pageTitle)}</title>`,
-    ...store.meta.map(renderMetaTag),
-    ...store.link.map(renderLinkTag),
-    ...store.style.map(renderStyleTag),
-    ...store.script.map(renderScriptTag),
+    ...renderManagedHeadTags(store),
   ];
 
   // ── Runtime data blob ───────────────────────────────────────────────────────
-  // Escape `</script>` so the embedded JSON cannot break out of the script tag.
-  // JSON parsers accept Unicode escapes transparently.
+  // Escape </script> sequences so the JSON cannot break out of the script tag.
   const runtimeData = JSON.stringify({
-    hydrateIds: [...ctx.hydrated],       // only components actually rendered
-    allIds:     [...registry.keys()],    // all reachable — pre-load for SPA nav
+    hydrateIds: [...ctx.hydrated],
+    allIds:     [...registry.keys()],
     url,
     params,
     debug: toClientDebugLevel(getDebugLevel()),

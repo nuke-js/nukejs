@@ -23,6 +23,16 @@
  *   - The handler fetches the target URL as HTML, diffs the #app container,
  *     unmounts the old React roots, and re-hydrates the new ones.
  *   - HMR navigations add ?__hmr=1 so the server skips client-SSR (faster).
+ *
+ * Head tag management:
+ *   - The SSR renderer wraps every useHtml()-generated <meta>, <link>, <style>,
+ *     and <script> tag in <!--n-head-->…<!--/n-head--> sentinel comments.
+ *   - On each navigation the client diffs the live sentinel block against the
+ *     incoming one by fingerprint, adding new tags and removing gone ones.
+ *     Tags shared between pages (e.g. a layout stylesheet) are left untouched
+ *     so there is no removal/re-insertion flash.
+ *   - New tags are always inserted before <!--/n-head--> so they stay inside
+ *     the tracked block and remain visible to the diff on subsequent navigations.
  */
 
 // ─── History patch ────────────────────────────────────────────────────────────
@@ -32,11 +42,11 @@
  * 'locationchange' event on window.  Also listens to 'popstate' for
  * back/forward navigation.
  *
- * This must be called after initRuntime sets up the navigation listener so
- * there's no race between the event firing and the listener being registered.
+ * Called after initRuntime sets up the navigation listener so there is no
+ * race between the event firing and the listener being registered.
  */
 export function setupLocationChangeMonitor(): void {
-  const originalPushState = window.history.pushState.bind(window.history);
+  const originalPushState    = window.history.pushState.bind(window.history);
   const originalReplaceState = window.history.replaceState.bind(window.history);
 
   const dispatch = (href?: any) =>
@@ -68,9 +78,9 @@ type ClientDebugLevel = 'silent' | 'error' | 'info' | 'verbose';
 function makeLogger(level: ClientDebugLevel) {
   return {
     verbose: (...a: any[]) => { if (level === 'verbose') console.log(...a); },
-    info: (...a: any[]) => { if (level === 'verbose' || level === 'info') console.log(...a); },
-    warn: (...a: any[]) => { if (level === 'verbose' || level === 'info') console.warn(...a); },
-    error: (...a: any[]) => { if (level !== 'silent') console.error(...a); },
+    info:    (...a: any[]) => { if (level === 'verbose' || level === 'info') console.log(...a); },
+    warn:    (...a: any[]) => { if (level === 'verbose' || level === 'info') console.warn(...a); },
+    error:   (...a: any[]) => { if (level !== 'silent') console.error(...a); },
   };
 }
 
@@ -84,9 +94,9 @@ type SerializedNode =
   | number
   | boolean
   | SerializedNode[]
-  | { __re: 'html'; tag: string; props: Record<string, any> }   // native DOM element
-  | { __re: 'client'; componentId: string; props: Record<string, any> } // client component
-  | Record<string, any>;                                             // plain object
+  | { __re: 'html';   tag: string;         props: Record<string, any> }
+  | { __re: 'client'; componentId: string; props: Record<string, any> }
+  | Record<string, any>;
 
 type ModuleMap = Map<string, any>; // componentId → default export
 
@@ -105,8 +115,8 @@ async function reconstructElement(node: SerializedNode, mods: ModuleMap): Promis
 
   if (Array.isArray(node)) {
     const items = await Promise.all(node.map(n => reconstructElement(n, mods)));
-    // Add index-based keys to any React elements in the array so React doesn't
-    // warn about "Each child in a list should have a unique key prop".
+    // Add index-based keys to React elements in the array to avoid the
+    // "Each child in a list should have a unique key prop" warning.
     const React = await import('react');
     return items.map((el, i) =>
       el && typeof el === 'object' && el.$$typeof
@@ -131,7 +141,7 @@ async function reconstructElement(node: SerializedNode, mods: ModuleMap): Promis
     return React.default.createElement(n.tag, await reconstructProps(n.props, mods));
   }
 
-  // Plain object — reconstruct each value.
+  // Plain object — pass through as-is.
   return node;
 }
 
@@ -187,19 +197,19 @@ type ReactRoot = { unmount(): void };
 const activeRoots: ReactRoot[] = [];
 
 /**
- * Finds every `[data-hydrate-id]` span in the document and either:
- *   - hydrateRoot()  — on initial page load (server HTML already present)
- *   - createRoot()   — after SPA navigation (innerHTML was set by us)
+ * Finds every `[data-hydrate-id]` span in the document and calls hydrateRoot()
+ * on it.  hydrateRoot reconciles React's virtual DOM against the existing server
+ * HTML without discarding it, which avoids a visible flash on both initial load
+ * and SPA navigation (where we set innerHTML to fresh SSR output before calling
+ * mountNodes).
  *
- * Nested markers (a client component inside another client component) are
- * skipped here because the parent's React tree will handle its children.
+ * Nested markers are skipped — the parent's React tree owns its children.
  */
 async function mountNodes(
   mods: ModuleMap,
-  log: ReturnType<typeof makeLogger>,
-  isNavigation: boolean,
+  log:  ReturnType<typeof makeLogger>,
 ): Promise<void> {
-  const { hydrateRoot, createRoot } = await import('react-dom/client');
+  const { hydrateRoot } = await import('react-dom/client');
   const React = await import('react');
 
   const nodes = document.querySelectorAll<HTMLElement>('[data-hydrate-id]');
@@ -209,11 +219,10 @@ async function mountNodes(
     // Skip nested markers — the outer component owns its children.
     if (node.parentElement?.closest('[data-hydrate-id]')) continue;
 
-    const id = node.getAttribute('data-hydrate-id')!;
+    const id   = node.getAttribute('data-hydrate-id')!;
     const Comp = mods.get(id);
     if (!Comp) { log.warn('No module for', id); continue; }
 
-    // Deserialize props from the data attribute (JSON set by the server).
     let rawProps: Record<string, any> = {};
     try {
       rawProps = JSON.parse(node.getAttribute('data-hydrate-props') || '{}');
@@ -223,12 +232,7 @@ async function mountNodes(
 
     try {
       const element = React.default.createElement(Comp, await reconstructProps(rawProps, mods));
-
-      // hydrateRoot reconciles React's virtual DOM against the server-rendered
-      // HTML without fully re-rendering.  createRoot replaces the content
-      // entirely — safe after navigation because we set innerHTML ourselves.
-      const root = isNavigation ? createRoot(node) : hydrateRoot(node, element);
-      if (isNavigation) (root as any).render(element);
+      const root    = hydrateRoot(node, element);
       activeRoots.push(root);
       log.verbose('✓ Mounted:', id);
     } catch (err) {
@@ -237,42 +241,112 @@ async function mountNodes(
   }
 }
 
+// ─── Head tag sync ────────────────────────────────────────────────────────────
+
+/**
+ * Walks a <head> element and returns every Element node that lives between
+ * the <!--n-head--> and <!--/n-head--> sentinel comments, plus the closing
+ * comment node itself (used as the insertion anchor).
+ *
+ * The SSR renderer emits these sentinels around every useHtml()-generated tag
+ * so the client can manage exactly that set without touching permanent tags
+ * (charset, viewport, importmap, runtime <script>).
+ */
+function headBlock(head: HTMLHeadElement): { nodes: Element[]; closeComment: Comment | null } {
+  const nodes: Element[] = [];
+  let closeComment: Comment | null = null;
+  let inside = false;
+
+  for (const child of Array.from(head.childNodes)) {
+    if (child.nodeType === Node.COMMENT_NODE) {
+      const text = (child as Comment).data.trim();
+      if (text === 'n-head')  { inside = true;  continue; }
+      if (text === '/n-head') { closeComment = child as Comment; inside = false; continue; }
+    }
+    if (inside && child.nodeType === Node.ELEMENT_NODE)
+      nodes.push(child as Element);
+  }
+
+  return { nodes, closeComment };
+}
+
+/** Stable key for an Element: tag name + sorted attribute list (name=value pairs). */
+function fingerprint(el: Element): string {
+  return el.tagName + '|' + Array.from(el.attributes)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(a => `${a.name}=${a.value}`)
+    .join('&');
+}
+
+/**
+ * Diffs the live <!--n-head--> block against the incoming document's block and
+ * applies the minimal set of DOM mutations:
+ *
+ *   - Tags present in `next` but not in `live` → inserted before <!--/n-head-->
+ *     so they remain inside the tracked block on future navigations.
+ *   - Tags present in `live` but not in `next` → removed.
+ *   - Tags present in both → left untouched (no removal/re-insertion flash).
+ *
+ * If the live head has no sentinel block yet (e.g. initial page had no useHtml
+ * tags), both sentinel comments are created on the fly.
+ */
+function syncHeadTags(doc: Document): void {
+  const live = headBlock(document.head);
+  const next = headBlock(doc.head);
+
+  const liveMap = new Map<string, Element>();
+  for (const el of live.nodes) liveMap.set(fingerprint(el), el);
+
+  const nextMap = new Map<string, Element>();
+  for (const el of next.nodes) nextMap.set(fingerprint(el), el);
+
+  // Ensure we have an anchor to insert before.
+  let anchor = live.closeComment;
+  if (!anchor) {
+    document.head.appendChild(document.createComment('n-head'));
+    anchor = document.createComment('/n-head');
+    document.head.appendChild(anchor);
+  }
+
+  for (const [fp, el] of nextMap)
+    if (!liveMap.has(fp)) document.head.insertBefore(el, anchor);
+
+  for (const [fp, el] of liveMap)
+    if (!nextMap.has(fp)) el.remove();
+}
+
 // ─── SPA navigation ───────────────────────────────────────────────────────────
 
 /**
- * Listens for 'locationchange' events (fired by setupLocationChangeMonitor
- * or by Link clicks) and performs a soft navigation:
+ * Syncs attributes from a parsed element onto the live document element.
+ * Adds/updates attributes present in `next` and removes any that were set
+ * on `live` but are absent in `next` (clears stale htmlAttrs/bodyAttrs).
+ */
+function syncAttrs(live: Element, next: Element): void {
+  for (const { name, value } of Array.from(next.attributes))
+    live.setAttribute(name, value);
+  for (const { name } of Array.from(live.attributes))
+    if (!next.hasAttribute(name)) live.removeAttribute(name);
+}
+
+/**
+ * Listens for 'locationchange' events and performs a soft navigation:
  *
- *   1. Fetch the target URL as HTML (adds ?__hmr=1 during HMR updates so the
- *      server skips client-side SSR for a faster response).
+ *   1. Fetch the target URL as HTML (?__hmr=1 skips client-SSR for HMR speed).
  *   2. Parse the response with DOMParser.
- *   3. Replace #app innerHTML and __n_data.
- *   4. Unmount old React roots, then re-hydrate new ones.
- *   5. Scroll to top.
+ *   3. Apply all visual DOM changes first (head tags, html/body attrs, #app
+ *      innerHTML, title, __n_data) so the new content is painted before React
+ *      cleanup effects run — prevents a useHtml restore from briefly undoing
+ *      the new document state.
+ *   4. Unmount old React roots (runs cleanup effects against the already-updated DOM).
+ *   5. Re-hydrate new client component markers.
+ *   6. Scroll to top.
  *
  * Falls back to a full page reload if anything goes wrong.
  */
-/**
- * Syncs attributes from a parsed element onto the live document element.
- * Adds/updates attributes present in `next`, and removes any that were set
- * on `live` but are absent in `next` (so stale bodyAttrs/htmlAttrs are cleared).
- */
-function syncAttrs(live: Element, next: Element): void {
-  // Apply / update attributes from the new document.
-  for (const { name, value } of Array.from(next.attributes)) {
-    live.setAttribute(name, value);
-  }
-  // Remove attributes that no longer exist in the new document.
-  for (const { name } of Array.from(live.attributes)) {
-    if (!next.hasAttribute(name)) live.removeAttribute(name);
-  }
-}
-
 function setupNavigation(log: ReturnType<typeof makeLogger>): void {
   window.addEventListener('locationchange', async ({ detail: { href, hmr } }: any) => {
     try {
-      // Append ?__hmr=1 for HMR-triggered reloads so SSR skips the slower
-      // client-component renderToString path.
       const fetchUrl = hmr
         ? href + (href.includes('?') ? '&' : '?') + '__hmr=1'
         : href;
@@ -283,41 +357,48 @@ function setupNavigation(log: ReturnType<typeof makeLogger>): void {
         return;
       }
 
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(await response.text(), 'text/html');
-      const newApp = doc.getElementById('app');
+      const parser  = new DOMParser();
+      const doc     = parser.parseFromString(await response.text(), 'text/html');
+      const newApp  = doc.getElementById('app');
       const currApp = document.getElementById('app');
       if (!newApp || !currApp) return;
 
-      // Tear down existing React trees before mutating the DOM — avoids React
-      // warnings about unmounting from a detached node.
-      activeRoots.splice(0).forEach(r => r.unmount());
+      // ── Visual update — all DOM mutations before React teardown ────────────
+      // Styles must be in place before new content appears to avoid an unstyled
+      // flash. Unmounting runs useEffect cleanups (including useHtml restores)
+      // which would temporarily revert document state if done first.
 
-      // Swap content in-place (avoids a full document.write / navigation).
+      // 1. Head tags — diff-based sync preserves shared layout tags untouched.
+      syncHeadTags(doc);
+
+      // 2. <html> and <body> attributes (lang, class, style, etc.).
+      syncAttrs(document.documentElement, doc.documentElement);
+      syncAttrs(document.body, doc.body);
+
+      // 3. Page content.
       currApp.innerHTML = newApp.innerHTML;
 
-      // Update the runtime data blob so subsequent navigations use the new page's
-      // client component IDs.
-      const newDataEl = doc.getElementById('__n_data');
-      const currDataEl = document.getElementById('__n_data');
-      if (newDataEl && currDataEl) currDataEl.textContent = newDataEl.textContent;
-
-      // Update <title>.
+      // 4. <title>.
       const newTitle = doc.querySelector('title');
       if (newTitle) document.title = newTitle.textContent ?? '';
 
-      // Sync <html> attributes (e.g. lang, class, style from useHtml({ htmlAttrs })).
-      syncAttrs(document.documentElement, doc.documentElement);
+      // 5. Runtime data blob — must come after innerHTML swap so the new
+      //    __n_data element is part of the live document.
+      const newDataEl  = doc.getElementById('__n_data');
+      const currDataEl = document.getElementById('__n_data');
+      if (newDataEl && currDataEl) currDataEl.textContent = newDataEl.textContent;
 
-      // Sync <body> attributes (e.g. style, class from useHtml({ bodyAttrs })).
-      syncAttrs(document.body, doc.body);
+      // ── React teardown ─────────────────────────────────────────────────────
+      // Unmount after the visual update.  Cleanup effects now run against an
+      // already-updated document, so there is nothing left to visually undo.
+      activeRoots.splice(0).forEach(r => r.unmount());
 
+      // ── Re-hydration ───────────────────────────────────────────────────────
       const navData = JSON.parse(currDataEl?.textContent ?? '{}') as RuntimeData;
       log.info('🔄 Route →', href, '— mounting', navData.hydrateIds?.length ?? 0, 'component(s)');
 
-      // Load bundles with a cache-buster timestamp so stale modules are evicted.
       const mods = await loadModules(navData.allIds ?? [], log, String(Date.now()));
-      await mountNodes(mods, log, true);
+      await mountNodes(mods, log);
 
       window.scrollTo(0, 0);
       log.info('🎉 Navigation complete:', href);
@@ -336,10 +417,10 @@ export interface RuntimeData {
   hydrateIds: string[];
   /** All client component IDs reachable from this page, including layouts.
    *  Pre-loaded so SPA navigations to related pages feel instant. */
-  allIds: string[];
-  url: string;
-  params: Record<string, any>;
-  debug: ClientDebugLevel;
+  allIds:  string[];
+  url:     string;
+  params:  Record<string, any>;
+  debug:   ClientDebugLevel;
 }
 
 /**
@@ -367,17 +448,17 @@ export async function initRuntime(data: RuntimeData): Promise<void> {
   log.info('🚀 Partial hydration:', data.hydrateIds.length, 'root component(s)');
 
   // Set up navigation first so any 'locationchange' fired during hydration
-  // is captured.
+  // is captured (e.g. a redirect side-effect inside a component).
   setupNavigation(log);
 
-  // Load all component bundles (not just hydrateIds) so SPA navigations can
-  // mount components for other pages without an extra network round-trip.
+  // Load all component bundles (not just hydrateIds) so SPA navigations to
+  // related pages can mount their components without an extra network round-trip.
   const mods = await loadModules(data.allIds, log);
-  await mountNodes(mods, log, false);
+  await mountNodes(mods, log);
 
   log.info('🎉 Done!');
 
-  // Patch history last so pushState calls during hydration (e.g. redirect
-  // side-effects) don't trigger a navigation before roots are ready.
+  // Patch history last so pushState calls during hydration don't trigger a
+  // navigation before roots are ready.
   setupLocationChangeMonitor();
 }

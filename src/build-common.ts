@@ -616,10 +616,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       '  <meta charset="utf-8" />',
       '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
       \`  <title>\${escapeHtml(pageTitle)}</title>\`,
-      ...store.meta.map(renderMetaTag),
-      ...store.link.map(renderLinkTag),
-      ...store.style.map(renderStyleTag),
-      ...store.script.map(renderScriptTag),
+      ...(store.meta.length || store.link.length || store.style.length || store.script.length ? [
+        '  <!--n-head-->',
+        ...store.meta.map(renderMetaTag),
+        ...store.link.map(renderLinkTag),
+        ...store.style.map(renderStyleTag),
+        ...store.script.map(renderScriptTag),
+        '  <!--/n-head-->',
+      ] : []),
     ];
 
     const runtimeData = JSON.stringify({
@@ -790,7 +794,7 @@ export async function bundlePageHandler(opts: PageBundleOptions): Promise<string
  * Mirrors bundleClientComponent() in bundler.ts:
  *   • browser ESM, JSX automatic
  *   • react / react-dom/client / react/jsx-runtime kept external so the
- *     importmap can resolve them to the already-loaded /__n.js bundle.
+ *     importmap can resolve them to the already-loaded /__react.js bundle.
  */
 export async function bundleClientComponents(
   globalRegistry: Map<string, string>,
@@ -863,14 +867,21 @@ export async function bundleClientComponents(
  *
  * Inlines the full React + ReactDOM runtime together with the NukeJS client
  * runtime (bundle.ts) so the browser only needs one file instead of two.
- * The importmap in every production page points 'react', 'react-dom/client',
- * 'react/jsx-runtime', and 'nukejs' all to /__n.js, so dynamic imports inside
- * the runtime (e.g. `await import('react')`) hit the module cache and return
- * the same singleton that was already loaded.
+ * The importmap in every page points 'react', 'react-dom/client',
+ * 'react/jsx-runtime', and 'nukejs' all to /__n.js, so dynamic imports
+ * inside the runtime (e.g. `await import('react')`) hit the module cache
+ * and return the same singleton that was already loaded.
+ *
+ * Dev mode (bundler.ts) keeps separate /__react.js and /__n.js files for
+ * easier debugging — this function is production-only.
  */
 export async function buildCombinedBundle(staticDir: string): Promise<void> {
   const nukeDir = path.dirname(fileURLToPath(import.meta.url));
-  const bundleFile = `bundle.${nukeDir.endsWith('dist') ? 'js' : 'ts'}`;
+  // In the dist/ directory the compiled file is bundle.js; in source it is bundle.ts.
+  // Omit the .js extension when pointing at the compiled bundle — esbuild
+  // resolves it correctly and avoids the double-extension chunk name (bundle.js.js)
+  // that occurs when the import specifier already carries a .js suffix.
+  const bundleFile = nukeDir.endsWith('dist') ? 'bundle' : 'bundle.ts';
 
   const result = await build({
     stdin: {
@@ -884,7 +895,7 @@ import React, {
 } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
 import { hydrateRoot, createRoot } from 'react-dom/client';
-export { initRuntime, setupLocationChangeMonitor } from ${JSON.stringify('.\/' + bundleFile)};
+export { initRuntime, setupLocationChangeMonitor } from './${bundleFile}';
 
 export {
   useState, useEffect, useContext, useReducer, useCallback, useMemo,
@@ -912,7 +923,7 @@ export default React;
     define: { 'process.env.NODE_ENV': '"production"' },
   });
   fs.writeFileSync(path.join(staticDir, '__n.js'), result.outputFiles[0].text);
-  console.log('  built     __n.js (react + runtime)');
+  console.log('  built     __n.js  (react + runtime)');
 }
 
 // ─── Public static file copying ───────────────────────────────────────────────
@@ -928,7 +939,7 @@ export default React;
  *   app/public/images/logo.png    → <destDir>/images/logo.png
  *
  * On Vercel, the Build Output API v3 serves everything in .vercel/output/static/
- * directly — no route entry needed, same as __n.js.
+ * directly — no route entry needed, same as __react.js and __n.js.
  *
  * On Node, the serverEntry template serves files from dist/static/ with the
  * same MIME-type logic as the dev middleware.
