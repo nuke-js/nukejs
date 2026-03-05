@@ -9,7 +9,7 @@
  *   — collection        : collectServerPages, collectGlobalClientRegistry
  *   — template codegen  : makeApiAdapterSource, makePageAdapterSource
  *   — bundle operations : bundleApiHandler, bundlePageHandler,
- *                         bundleClientComponents, buildReactBundle, buildNukeBundle
+ *                         bundleClientComponents, buildCombinedBundle
  */
 
 import fs from 'fs';
@@ -643,9 +643,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   <script type="importmap">
   {
     "imports": {
-      "react":             "/__react.js",
-      "react-dom/client":  "/__react.js",
-      "react/jsx-runtime": "/__react.js",
+      "react":             "/__n.js",
+      "react-dom/client":  "/__n.js",
+      "react/jsx-runtime": "/__n.js",
       "nukejs":            "/__n.js"
     }
   }
@@ -790,7 +790,7 @@ export async function bundlePageHandler(opts: PageBundleOptions): Promise<string
  * Mirrors bundleClientComponent() in bundler.ts:
  *   • browser ESM, JSX automatic
  *   • react / react-dom/client / react/jsx-runtime kept external so the
- *     importmap can resolve them to the already-loaded /__react.js bundle.
+ *     importmap can resolve them to the already-loaded /__n.js bundle.
  */
 export async function bundleClientComponents(
   globalRegistry: Map<string, string>,
@@ -859,11 +859,19 @@ export async function bundleClientComponents(
 }
 
 /**
- * Builds the full React + ReactDOM browser bundle to `<staticDir>/__react.js`.
- * Exports every public hook and helper so client component bundles can import
- * them via the importmap without bundling React a second time.
+ * Builds a single combined browser bundle to `<staticDir>/__n.js`.
+ *
+ * Inlines the full React + ReactDOM runtime together with the NukeJS client
+ * runtime (bundle.ts) so the browser only needs one file instead of two.
+ * The importmap in every production page points 'react', 'react-dom/client',
+ * 'react/jsx-runtime', and 'nukejs' all to /__n.js, so dynamic imports inside
+ * the runtime (e.g. `await import('react')`) hit the module cache and return
+ * the same singleton that was already loaded.
  */
-export async function buildReactBundle(staticDir: string): Promise<void> {
+export async function buildCombinedBundle(staticDir: string): Promise<void> {
+  const nukeDir = path.dirname(fileURLToPath(import.meta.url));
+  const bundleFile = `bundle.${nukeDir.endsWith('dist') ? 'js' : 'ts'}`;
+
   const result = await build({
     stdin: {
       contents: `
@@ -876,6 +884,7 @@ import React, {
 } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
 import { hydrateRoot, createRoot } from 'react-dom/client';
+export { initRuntime, setupLocationChangeMonitor } from ${JSON.stringify('.\/' + bundleFile)};
 
 export {
   useState, useEffect, useContext, useReducer, useCallback, useMemo,
@@ -888,6 +897,7 @@ export {
 export default React;
 `,
       loader: 'ts',
+      resolveDir: nukeDir,
     },
     bundle: true,
     write: false,
@@ -901,26 +911,8 @@ export default React;
     },
     define: { 'process.env.NODE_ENV': '"production"' },
   });
-  fs.writeFileSync(path.join(staticDir, '__react.js'), result.outputFiles[0].text);
-  console.log('  built     __react.js');
-}
-
-/**
- * Builds the nukejs client runtime to `<staticDir>/__n.js`.
- * React and react-dom/client are kept external (resolved via importmap).
- */
-export async function buildNukeBundle(staticDir: string): Promise<void> {
-  const nukeDir = path.dirname(fileURLToPath(import.meta.url));
-  const result = await build({
-    entryPoints: [path.join(nukeDir, 'bundle.js')],
-    bundle: true,
-    write: false,
-    format: 'esm',
-    minify: true,
-    external: ['react', 'react-dom/client'],
-  });
   fs.writeFileSync(path.join(staticDir, '__n.js'), result.outputFiles[0].text);
-  console.log('  built     __n.js');
+  console.log('  built     __n.js (react + runtime)');
 }
 
 // ─── Public static file copying ───────────────────────────────────────────────
@@ -936,7 +928,7 @@ export async function buildNukeBundle(staticDir: string): Promise<void> {
  *   app/public/images/logo.png    → <destDir>/images/logo.png
  *
  * On Vercel, the Build Output API v3 serves everything in .vercel/output/static/
- * directly — no route entry needed, same as __react.js and __n.js.
+ * directly — no route entry needed, same as __n.js.
  *
  * On Node, the serverEntry template serves files from dist/static/ with the
  * same MIME-type logic as the dev middleware.

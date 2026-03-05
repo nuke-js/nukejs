@@ -13,8 +13,7 @@ import {
   findPageLayouts,
   buildPerPageRegistry,
   makePageAdapterSource,
-  buildReactBundle,
-  buildNukeBundle,
+  buildCombinedBundle,
   copyPublicFiles,
 } from './build-common';
 
@@ -333,8 +332,7 @@ fs.writeFileSync(
 
 // ─── Static assets ────────────────────────────────────────────────────────────
 
-await buildReactBundle(STATIC_DIR);
-await buildNukeBundle(STATIC_DIR);
+await buildCombinedBundle(STATIC_DIR);
 copyPublicFiles(PUBLIC_DIR, STATIC_DIR);
 
 const fnCount = (apiRoutes.length > 0 ? 1 : 0) + (serverPages.length > 0 ? 1 : 0);

@@ -7,8 +7,7 @@ import {
   walkFiles,
   buildPages,
   bundleApiHandler,
-  buildReactBundle,
-  buildNukeBundle,
+  buildCombinedBundle,
   copyPublicFiles,
   type AnalyzedRoute,
 } from './build-common';
@@ -100,8 +99,7 @@ fs.writeFileSync(
 
 // ─── Static assets ────────────────────────────────────────────────────────────
 
-await buildReactBundle(STATIC_DIR);
-await buildNukeBundle(STATIC_DIR);
+await buildCombinedBundle(STATIC_DIR);
 copyPublicFiles(PUBLIC_DIR, STATIC_DIR);
 
 // ─── Server entry ─────────────────────────────────────────────────────────────
@@ -164,9 +162,8 @@ const server = http.createServer(async (req, res) => {
   const url   = req.url || '/';
   const clean = url.split('?')[0];
 
-  // Internal __-prefixed static assets (/__react.js, /__n.js, /__client-component/*)
+  // Internal __-prefixed static assets (/__n.js, /__client-component/*)
   if (
-    clean === '/__react.js' ||
     clean === '/__n.js' ||
     clean.startsWith('/__client-component/')
   ) {
