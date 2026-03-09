@@ -1,6 +1,6 @@
 {
   "name": "nukejs",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "A minimal, opinionated full-stack React framework on Node.js that server-renders everything and hydrates only interactive parts.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

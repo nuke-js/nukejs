@@ -60,7 +60,7 @@ export default function hmr(): void {
           return;
         }
         // A specific page changed — only navigate if we're on that page.
-        if (msg.url === window.location.pathname) {
+        if (patternMatchesPathname(msg.url, window.location.pathname)) {
           log.info('[HMR] Page changed:', msg.url);
           navigate(window.location.pathname + window.location.search);
         }
@@ -90,6 +90,31 @@ export default function hmr(): void {
  */
 function navigate(href: string): void {
   window.dispatchEvent(new CustomEvent('locationchange', { detail: { href, hmr: true } }));
+}
+
+// ─── Dynamic route pattern matching ──────────────────────────────────────────
+
+/**
+ * Returns true when `pathname` matches the route `pattern` emitted by the
+ * server.  Patterns use the file-system conventions:
+ *   [param]     → any single non-slash segment
+ *   [...slug]   → one or more segments
+ *   [[...slug]] → zero or more segments
+ *   [[param]]   → zero or one segment
+ *
+ * Each segment is classified before any escaping so that bracket characters
+ * in param names are never mistaken for regex metacharacters.
+ */
+function patternMatchesPathname(pattern: string, pathname: string): boolean {
+  const segments   = pattern.replace(/^\//, '').split('/');
+  const regexParts = segments.map(seg => {
+    if (/^\[\[\.\.\..+\]\]$/.test(seg)) return '(?:\/.*)?' ;  // [[...x]] optional catch-all
+    if (/^\[\.\.\./.test(seg))            return '(?:\/.+)' ;   // [...x]   required catch-all
+    if (/^\[\[/.test(seg))                  return '(?:\/[^/]*)?' ;// [[x]]    optional single
+    if (/^\[/.test(seg))                    return '\/[^/]+' ;     // [x]      required single
+    return '\/' + seg.replace(/[.+?^${}()|[\]\\]/g, '\\$&'); // static — escape metacharacters
+  });
+  return new RegExp('^' + regexParts.join('') + '$').test(pathname);
 }
 
 // ─── Reconnect polling ────────────────────────────────────────────────────────
