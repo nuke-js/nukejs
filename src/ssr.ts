@@ -201,6 +201,19 @@ export async function serverSideRender(
   const { filePath, params, routePattern } = routeMatch;
   log.verbose(`SSR ${cleanUrl} -> ${path.relative(process.cwd(), filePath)}`);
 
+  // Merge query string params into props so page components can access them
+  // the same way in dev and production.  Route params take precedence so a
+  // ?slug=x in the query string cannot shadow a [slug] dynamic segment.
+  const searchParams = new URL(url, 'http://localhost').searchParams;
+  const queryParams: Record<string, string | string[]> = {};
+  searchParams.forEach((_, k) => {
+    if (!(k in params)) {
+      const all = searchParams.getAll(k);
+      queryParams[k] = all.length > 1 ? all : all[0];
+    }
+  });
+  const mergedParams = { ...queryParams, ...params };
+
   // ── Module import ───────────────────────────────────────────────────────────
   // tsImport bypasses Node's ESM module cache entirely so edits are reflected
   // immediately on every request in dev.
@@ -210,7 +223,7 @@ export async function serverSideRender(
     { parentURL: import.meta.url },
   );
   const wrappedElement = await wrapWithLayouts(
-    createElement(PageComponent, params),
+    createElement(PageComponent, mergedParams),
     layoutPaths,
   );
 
@@ -237,7 +250,7 @@ export async function serverSideRender(
   });
 
   // ── Head assembly ───────────────────────────────────────────────────────────
-  const pageTitle = resolveTitle(store.titleOps, 'Nuke');
+  const pageTitle = resolveTitle(store.titleOps, 'SSR App');
 
   const headLines: string[] = [
     '  <meta charset="utf-8" />',

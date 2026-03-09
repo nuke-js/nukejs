@@ -62,7 +62,7 @@ export default function hmr(): void {
         // A specific page changed — only navigate if we're on that page.
         if (msg.url === window.location.pathname) {
           log.info('[HMR] Page changed:', msg.url);
-          navigate(window.location.pathname);
+          navigate(window.location.pathname + window.location.search);
         }
         return;
       }
@@ -71,7 +71,7 @@ export default function hmr(): void {
         // A shared component or utility changed.  The current page might use
         // it, so we re-navigate to pick up the latest server render.
         log.info('[HMR] Component changed:', msg.component);
-        navigate(window.location.pathname);
+        navigate(window.location.pathname + window.location.search);
         return;
       }
     } catch (err) {
