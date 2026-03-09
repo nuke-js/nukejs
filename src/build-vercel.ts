@@ -1,7 +1,26 @@
-import fs from 'fs';
+/**
+ * build-vercel.ts — Vercel Production Build
+ *
+ * Produces a .vercel/output/ directory conforming to the Vercel Build Output
+ * API v3.  Two serverless functions are emitted:
+ *
+ *   api.func/   ← single dispatcher bundling all API route handlers
+ *   pages.func/ ← single dispatcher bundling all SSR page handlers
+ *
+ * Static assets (React runtime, client components, public files) go to
+ * .vercel/output/static/ and are served by Vercel's CDN directly.
+ *
+ * Notes on bundling strategy:
+ *   - npm packages are FULLY BUNDLED (no node_modules at Vercel runtime).
+ *   - Node built-ins are kept external (available in the nodejs20.x runtime).
+ *   - A createRequire banner lets CJS packages (mongoose, etc.) resolve Node
+ *     built-ins correctly inside the ESM output bundle.
+ */
+
+import fs   from 'fs';
 import path from 'path';
-import crypto from 'crypto';
-import { build } from 'esbuild';
+import { randomBytes } from 'node:crypto';
+import { build }       from 'esbuild';
 
 import { loadConfig } from './config';
 import {
@@ -19,19 +38,47 @@ import {
 
 // ─── Output directories ───────────────────────────────────────────────────────
 
-const OUTPUT_DIR = path.resolve('.vercel/output');
+const OUTPUT_DIR    = path.resolve('.vercel/output');
 const FUNCTIONS_DIR = path.join(OUTPUT_DIR, 'functions');
-const STATIC_DIR = path.join(OUTPUT_DIR, 'static');
+const STATIC_DIR    = path.join(OUTPUT_DIR, 'static');
 
-fs.mkdirSync(FUNCTIONS_DIR, { recursive: true });
-fs.mkdirSync(STATIC_DIR, { recursive: true });
+for (const dir of [FUNCTIONS_DIR, STATIC_DIR])
+  fs.mkdirSync(dir, { recursive: true });
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const config = await loadConfig();
+const config     = await loadConfig();
 const SERVER_DIR = path.resolve(config.serverDir);
-const PAGES_DIR = path.resolve('./app/pages');
+const PAGES_DIR  = path.resolve('./app/pages');
 const PUBLIC_DIR = path.resolve('./app/public');
+
+// ─── Shared esbuild config ────────────────────────────────────────────────────
+
+/**
+ * Node built-ins that should never be bundled.
+ * npm packages are intentionally absent — they must be bundled because
+ * Vercel serverless functions have no node_modules at runtime.
+ */
+const NODE_BUILTINS = [
+  'node:*',
+  'http', 'https', 'fs', 'path', 'url', 'crypto', 'stream', 'buffer',
+  'events', 'util', 'os', 'net', 'tls', 'child_process', 'worker_threads',
+  'cluster', 'dgram', 'dns', 'readline', 'zlib', 'assert', 'module',
+  'perf_hooks', 'string_decoder', 'timers', 'async_hooks', 'v8', 'vm',
+];
+
+/**
+ * Banner injected at the top of every Vercel function bundle.
+ *
+ * Why it's needed: esbuild bundles CJS packages (mongoose, etc.) into ESM
+ * output and replaces their require() calls with a __require2 shim.  That
+ * shim cannot resolve Node built-ins on its own inside an ESM module scope.
+ * Injecting a real require (backed by createRequire) fixes the shim so that
+ * dynamic require('crypto'), require('stream'), etc. work correctly.
+ */
+const CJS_COMPAT_BANNER = {
+  js: `import { createRequire } from 'module';\nconst require = createRequire(import.meta.url);`,
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -39,7 +86,7 @@ type VercelRoute = { src: string; dest: string };
 
 /** Writes a bundled dispatcher into a Vercel .func directory. */
 function emitVercelFunction(name: string, bundleText: string): void {
-  const funcDir = path.join(FUNCTIONS_DIR, name + '.func');
+  const funcDir = path.join(FUNCTIONS_DIR, `${name}.func`);
   fs.mkdirSync(funcDir, { recursive: true });
   fs.writeFileSync(path.join(funcDir, 'index.mjs'), bundleText);
   fs.writeFileSync(
@@ -51,11 +98,9 @@ function emitVercelFunction(name: string, bundleText: string): void {
 // ─── API dispatcher source ────────────────────────────────────────────────────
 
 /**
- * Generates a single dispatcher that imports every API route module directly,
+ * Generates a single TypeScript dispatcher that imports every API route module,
  * matches the incoming URL against each route's regex, injects captured params,
  * and calls the right HTTP-method export (GET, POST, …) or default export.
- *
- * enhance / parseBody helpers are included once rather than once per route.
  */
 function makeApiDispatcherSource(
   routes: Array<{ absPath: string; srcRegex: string; paramNames: string[] }>,
@@ -141,13 +186,18 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 // ─── Pages dispatcher source ──────────────────────────────────────────────────
 
 /**
- * Generates a dispatcher that imports each page's pre-generated adapter by its
- * temp file path, matches the incoming URL, injects captured dynamic params as
- * query-string values (page handlers read params from req.url searchParams),
- * then delegates to the matching handler.
+ * Generates a TypeScript dispatcher that imports each page's pre-generated
+ * adapter, matches the incoming URL, encodes captured dynamic params as
+ * query-string values (catch-all params use repeated keys), then delegates
+ * to the matching handler.
  */
 function makePagesDispatcherSource(
-  routes: Array<{ adapterPath: string; srcRegex: string; paramNames: string[] }>,
+  routes: Array<{
+    adapterPath:   string;
+    srcRegex:      string;
+    paramNames:    string[];
+    catchAllNames: string[];
+  }>,
 ): string {
   const imports = routes
     .map((r, i) => `import __page_${i}__ from ${JSON.stringify(r.adapterPath)};`)
@@ -155,7 +205,7 @@ function makePagesDispatcherSource(
 
   const routeEntries = routes
     .map((r, i) =>
-      `  { regex: ${JSON.stringify(r.srcRegex)}, params: ${JSON.stringify(r.paramNames)}, handler: __page_${i}__ },`,
+      `  { regex: ${JSON.stringify(r.srcRegex)}, params: ${JSON.stringify(r.paramNames)}, catchAll: ${JSON.stringify(r.catchAllNames)}, handler: __page_${i}__ },`,
     )
     .join('\n');
 
@@ -164,9 +214,10 @@ import type { IncomingMessage, ServerResponse } from 'http';
 ${imports}
 
 const ROUTES: Array<{
-  regex: string;
-  params: string[];
-  handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+  regex:    string;
+  params:   string[];
+  catchAll: string[];
+  handler:  (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 }> = [
 ${routeEntries}
 ];
@@ -179,9 +230,16 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const m = pathname.match(new RegExp(route.regex));
     if (!m) continue;
 
-    // Inject dynamic params as query-string values so page handlers can read
-    // them via new URL(req.url).searchParams — the same way they always have.
-    route.params.forEach((name, i) => url.searchParams.set(name, m[i + 1]));
+    const catchAllSet = new Set(route.catchAll);
+    route.params.forEach((name, i) => {
+      const raw = m[i + 1] ?? '';
+      if (catchAllSet.has(name)) {
+        // Encode catch-all as repeated keys so the handler can getAll() → string[]
+        raw.split('/').filter(Boolean).forEach(seg => url.searchParams.append(name, seg));
+      } else {
+        url.searchParams.set(name, raw);
+      }
+    });
     req.url = pathname + (url.search || '');
 
     return route.handler(req, res);
@@ -206,19 +264,19 @@ const apiRoutes = apiFiles
   .sort((a, b) => b.specificity - a.specificity);
 
 if (apiRoutes.length > 0) {
-  const dispatcherSource = makeApiDispatcherSource(apiRoutes);
-  const dispatcherPath = path.join(SERVER_DIR, `_api_dispatcher_${crypto.randomBytes(4).toString('hex')}.ts`);
-  fs.writeFileSync(dispatcherPath, dispatcherSource);
+  const dispatcherPath = path.join(SERVER_DIR, `_api_dispatcher_${randomBytes(4).toString('hex')}.ts`);
+  fs.writeFileSync(dispatcherPath, makeApiDispatcherSource(apiRoutes));
 
   try {
     const result = await build({
       entryPoints: [dispatcherPath],
-      bundle: true,
-      format: 'esm',
-      platform: 'node',
-      target: 'node20',
-      packages: 'external',
-      write: false,
+      bundle:      true,
+      format:      'esm',
+      platform:    'node',
+      target:      'node20',
+      banner:      CJS_COMPAT_BANNER,
+      external:    NODE_BUILTINS,
+      write:       false,
     });
     emitVercelFunction('api', result.outputFiles[0].text);
     console.log(`  built     API dispatcher → api.func  (${apiRoutes.length} route(s))`);
@@ -227,9 +285,8 @@ if (apiRoutes.length > 0) {
   }
 
   // API routes are listed first — they win on any URL collision with pages.
-  for (const { srcRegex } of apiRoutes) {
+  for (const { srcRegex } of apiRoutes)
     vercelRoutes.push({ src: srcRegex, dest: '/api' });
-  }
 }
 
 // ─── Build Pages function ─────────────────────────────────────────────────────
@@ -238,22 +295,21 @@ const serverPages = collectServerPages(PAGES_DIR);
 
 if (serverPages.length > 0) {
   // Pass 1 — bundle all client components to static files.
-  const globalClientRegistry = collectGlobalClientRegistry(serverPages, PAGES_DIR);
-  const prerenderedHtml = await bundleClientComponents(globalClientRegistry, PAGES_DIR, STATIC_DIR);
-  const prerenderedHtmlRecord = Object.fromEntries(prerenderedHtml);
+  const globalRegistry  = collectGlobalClientRegistry(serverPages, PAGES_DIR);
+  const prerenderedHtml = await bundleClientComponents(globalRegistry, PAGES_DIR, STATIC_DIR);
+  const prerenderedRecord = Object.fromEntries(prerenderedHtml);
 
   // Pass 2 — write one temp adapter per page next to its source file (so
-  //           relative imports inside the component resolve correctly), then
-  //           bundle everything in one esbuild pass via the dispatcher.
+  //           relative imports resolve correctly), then bundle everything in
+  //           one esbuild pass via the dispatcher.
   const tempAdapterPaths: string[] = [];
 
   for (const page of serverPages) {
-    const { absPath } = page;
-    const adapterDir = path.dirname(absPath);
-    const adapterPath = path.join(adapterDir, `_page_adapter_${crypto.randomBytes(4).toString('hex')}.ts`);
+    const adapterDir  = path.dirname(page.absPath);
+    const adapterPath = path.join(adapterDir, `_page_adapter_${randomBytes(4).toString('hex')}.ts`);
 
-    const layoutPaths = findPageLayouts(absPath, PAGES_DIR);
-    const { registry, clientComponentNames } = buildPerPageRegistry(absPath, layoutPaths, PAGES_DIR);
+    const layoutPaths = findPageLayouts(page.absPath, PAGES_DIR);
+    const { registry, clientComponentNames } = buildPerPageRegistry(page.absPath, layoutPaths, PAGES_DIR);
 
     const layoutImports = layoutPaths
       .map((lp, i) => {
@@ -265,46 +321,42 @@ if (serverPages.length > 0) {
     fs.writeFileSync(
       adapterPath,
       makePageAdapterSource({
-        pageImport: JSON.stringify('./' + path.basename(absPath)),
+        pageImport:           JSON.stringify('./' + path.basename(page.absPath)),
         layoutImports,
         clientComponentNames,
-        allClientIds: [...registry.keys()],
-        layoutArrayItems: layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
-        prerenderedHtml: prerenderedHtmlRecord,
+        allClientIds:         [...registry.keys()],
+        layoutArrayItems:     layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
+        prerenderedHtml:      prerenderedRecord,
+        catchAllNames:        page.catchAllNames,
       }),
     );
 
     tempAdapterPaths.push(adapterPath);
-    console.log(`  prepared  ${path.relative(PAGES_DIR, absPath)}  →  ${page.funcPath}  [page]`);
+    console.log(`  prepared  ${path.relative(PAGES_DIR, page.absPath)}  →  ${page.funcPath}  [page]`);
   }
 
-  // Write the dispatcher and let esbuild bundle all adapters in one pass.
   const dispatcherRoutes = serverPages.map((page, i) => ({
-    adapterPath: tempAdapterPaths[i],
-    srcRegex: page.srcRegex,
-    paramNames: page.paramNames,
+    adapterPath:   tempAdapterPaths[i],
+    srcRegex:      page.srcRegex,
+    paramNames:    page.paramNames,
+    catchAllNames: page.catchAllNames,
   }));
 
-  const dispatcherPath = path.join(PAGES_DIR, `_pages_dispatcher_${crypto.randomBytes(4).toString('hex')}.ts`);
+  const dispatcherPath = path.join(PAGES_DIR, `_pages_dispatcher_${randomBytes(4).toString('hex')}.ts`);
   fs.writeFileSync(dispatcherPath, makePagesDispatcherSource(dispatcherRoutes));
 
   try {
     const result = await build({
       entryPoints: [dispatcherPath],
-      bundle: true,
-      format: 'esm',
-      platform: 'node',
-      target: 'node20',
-      jsx: 'automatic',
-      external: [
-        'node:*',
-        'http', 'https', 'fs', 'path', 'url', 'crypto', 'stream', 'buffer',
-        'events', 'util', 'os', 'net', 'tls', 'child_process', 'worker_threads',
-        'cluster', 'dgram', 'dns', 'readline', 'zlib', 'assert', 'module',
-        'perf_hooks', 'string_decoder', 'timers', 'async_hooks', 'v8', 'vm',
-      ],
-      define: { 'process.env.NODE_ENV': '"production"' },
-      write: false,
+      bundle:      true,
+      format:      'esm',
+      platform:    'node',
+      target:      'node20',
+      jsx:         'automatic',
+      banner:      CJS_COMPAT_BANNER,
+      external:    NODE_BUILTINS,
+      define:      { 'process.env.NODE_ENV': '"production"' },
+      write:       false,
     });
     emitVercelFunction('pages', result.outputFiles[0].text);
     console.log(`  built     Pages dispatcher → pages.func  (${serverPages.length} page(s))`);
@@ -313,9 +365,8 @@ if (serverPages.length > 0) {
     for (const p of tempAdapterPaths) if (fs.existsSync(p)) fs.unlinkSync(p);
   }
 
-  for (const { srcRegex } of serverPages) {
+  for (const { srcRegex } of serverPages)
     vercelRoutes.push({ src: srcRegex, dest: '/pages' });
-  }
 }
 
 // ─── Vercel config ────────────────────────────────────────────────────────────
@@ -324,7 +375,6 @@ fs.writeFileSync(
   path.join(OUTPUT_DIR, 'config.json'),
   JSON.stringify({ version: 3, routes: vercelRoutes }, null, 2),
 );
-
 fs.writeFileSync(
   path.resolve('vercel.json'),
   JSON.stringify({ runtime: 'nodejs20.x' }, null, 2),

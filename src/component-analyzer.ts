@@ -11,12 +11,12 @@
  *      reconstruct them after loading the bundle.
  *
  * How it works:
- *   - analyzeComponent()         checks whether a file starts with "use client"
- *                                 and assigns a stable content-hash ID if it does.
- *   - extractImports()           parses `import … from '…'` statements with a
- *                                 regex and resolves relative/absolute paths.
+ *   - analyzeComponent()          checks whether a file starts with "use client"
+ *                                  and assigns a stable content-hash ID if it does.
+ *   - extractImports()            parses `import … from '…'` statements with a
+ *                                  regex and resolves relative/absolute paths.
  *   - findClientComponentsInTree() recursively walks the import graph, stopping
- *                                 at client boundaries (they own their subtree).
+ *                                  at client boundaries (they own their subtree).
  *
  * Results are memoised in `componentCache` (process-lifetime) so repeated SSR
  * renders don't re-read and re-hash files they've already seen.
@@ -28,8 +28,8 @@
  */
 
 import path from 'path';
-import fs from 'fs';
-import crypto from 'crypto';
+import fs   from 'fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'url';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -74,12 +74,10 @@ function isClientComponent(filePath: string): boolean {
  * portable across machines (absolute paths differ per developer).
  */
 function getClientComponentId(filePath: string, pagesDir: string): string {
-  const hash = crypto
-    .createHash('md5')
+  return 'cc_' + createHash('md5')
     .update(path.relative(pagesDir, filePath))
     .digest('hex')
     .substring(0, 8);
-  return `cc_${hash}`;
 }
 
 // ─── Analysis ─────────────────────────────────────────────────────────────────
@@ -107,8 +105,8 @@ export function analyzeComponent(filePath: string, pagesDir: string): ComponentI
 // ─── Import extraction ────────────────────────────────────────────────────────
 
 /**
- * Parses `import … from '…'` and `export … from '…'` statements in a file and returns a list of
- * resolved absolute paths for all *local* imports (relative or absolute paths).
+ * Parses `import … from '…'` and `export … from '…'` statements in a file
+ * and returns a list of resolved absolute paths for all *local* imports.
  *
  * Non-local specifiers (npm packages) are skipped, except `nukejs` itself —
  * which is resolved to our own index file so built-in "use client" components
@@ -126,11 +124,11 @@ function extractImports(filePath: string): string[] {
   let match: RegExpExecArray | null;
 
   while ((match = importRegex.exec(content)) !== null) {
-    const importPath = match[1];
+    const spec = match[1];
 
-    // Special case: resolve the 'nukejs' package import to our own source so
+    // Special case: resolve the 'nukejs' package to our own source so
     // built-in "use client" exports (Link, useRouter, etc.) are discovered.
-    if (importPath === 'nukejs') {
+    if (spec === 'nukejs') {
       const selfDir = path.dirname(fileURLToPath(import.meta.url));
       for (const candidate of [
         path.join(selfDir, 'index.ts'),
@@ -142,26 +140,22 @@ function extractImports(filePath: string): string[] {
     }
 
     // Skip npm packages and other non-local specifiers.
-    if (!importPath.startsWith('.') && !importPath.startsWith('/')) continue;
+    if (!spec.startsWith('.') && !spec.startsWith('/')) continue;
 
-    // Resolve to an absolute path and add common extensions if needed.
-    let resolved = path.resolve(dir, importPath);
+    // Resolve to an absolute path, trying extensions if needed.
+    let resolved = path.resolve(dir, spec);
     const EXTS = ['.tsx', '.ts', '.jsx', '.js'] as const;
-
-    const isFile = (p: string) =>
-      fs.existsSync(p) && fs.statSync(p).isFile();
+    const isFile = (p: string) => fs.existsSync(p) && fs.statSync(p).isFile();
 
     if (!isFile(resolved)) {
       let found = false;
 
-      // 1. Try appending an extension  (e.g. './Button' → './Button.tsx')
+      // 1. Try appending an extension  (./Button → ./Button.tsx)
       for (const ext of EXTS) {
-        const candidate = resolved + ext;
-        if (isFile(candidate)) { resolved = candidate; found = true; break; }
+        if (isFile(resolved + ext)) { resolved += ext; found = true; break; }
       }
 
-      // 2. If resolved is a directory, look for an index file inside it
-      //    (e.g. './components' → './components/index.tsx')
+      // 2. Try an index file inside the directory  (./components → ./components/index.tsx)
       if (!found && fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
         for (const ext of EXTS) {
           const candidate = path.join(resolved, `index${ext}`);
@@ -169,7 +163,7 @@ function extractImports(filePath: string): string[] {
         }
       }
 
-      if (!found) continue; // unresolvable import — skip silently
+      if (!found) continue; // Unresolvable — skip silently
     }
 
     imports.push(resolved);
@@ -184,7 +178,7 @@ function extractImports(filePath: string): string[] {
  * Recursively walks the import graph from `filePath`, collecting every
  * "use client" file encountered.
  *
- * The walk stops at client boundaries: a "use client" file is collected and
+ * The walk stops at client boundaries: a "use client" file is recorded and
  * its own imports are NOT walked (the client runtime handles their subtree).
  *
  * The `visited` set prevents infinite loops from circular imports.
@@ -197,37 +191,31 @@ export function findClientComponentsInTree(
   pagesDir:  string,
   visited  = new Set<string>(),
 ): Map<string, string> {
-  const clientComponents = new Map<string, string>();
-  if (visited.has(filePath)) return clientComponents;
+  const found = new Map<string, string>();
+  if (visited.has(filePath)) return found;
   visited.add(filePath);
 
   const info = analyzeComponent(filePath, pagesDir);
 
-  // This file is a client boundary — record it and stop descending.
   if (info.isClientComponent && info.clientComponentId) {
-    clientComponents.set(info.clientComponentId, filePath);
-    return clientComponents;
+    found.set(info.clientComponentId, filePath);
+    return found; // Stop — client boundary owns its subtree
   }
 
-  // Server component — recurse into its imports.
   for (const importPath of extractImports(filePath)) {
     for (const [id, p] of findClientComponentsInTree(importPath, pagesDir, visited)) {
-      clientComponents.set(id, p);
+      found.set(id, p);
     }
   }
 
-  return clientComponents;
+  return found;
 }
 
 // ─── Cache access ─────────────────────────────────────────────────────────────
 
-
 /**
  * Looks up the absolute file path for a client component by its ID.
- * O(1) reverse lookup — avoids the O(n) linear scan in bundler.ts.
- *
- * Returns undefined when the ID is not in the cache (page not yet visited
- * in dev, or stale ID after a file change).
+ * Returns undefined when the ID is not in the cache.
  */
 export function getComponentById(id: string): string | undefined {
   for (const [filePath, info] of componentCache) {
