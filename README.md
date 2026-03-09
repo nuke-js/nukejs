@@ -1,9 +1,11 @@
-# ☢️ NukeJS
+[![NukeJS Banner](.github/banner.png)](https://nukejs.com)
+
+# NukeJS
 
 A **minimal**, opinionated full-stack React framework on Node.js that server-renders everything and hydrates only interactive parts.
 
 ```
-npm create nuke
+npm create nuke@latest
 ```
 
 ## Table of Contents
@@ -129,8 +131,9 @@ Each `.tsx` file in `app/pages/` maps to a URL route:
 | `about.tsx` | `/about` |
 | `blog/index.tsx` | `/blog` |
 | `blog/[slug].tsx` | `/blog/:slug` |
-| `docs/[...path].tsx` | `/docs/*` (catch-all) |
-| `files/[[...path]].tsx` | `/files` or `/files/*` (optional) |
+| `docs/[...path].tsx` | `/docs/*` (catch-all, required) |
+| `users/[[id]].tsx` | `/users` or `/users/42` (optional single segment) |
+| `files/[[...path]].tsx` | `/files` or `/files/*` (optional catch-all) |
 
 ### Page component
 
@@ -168,8 +171,11 @@ When multiple routes could match a URL, the most specific one wins:
 ```
 /users/profile  → users/profile.tsx   (static, wins)
 /users/42       → users/[id].tsx      (dynamic)
+/users          → users/[[id]].tsx    (optional single, matches with no id)
 /users/a/b/c    → users/[...rest].tsx (catch-all)
 ```
+
+Specificity order, highest to lowest: static → `[param]` → `[[param]]` → `[...catchAll]` → `[[...optionalCatchAll]]`.
 
 ---
 
