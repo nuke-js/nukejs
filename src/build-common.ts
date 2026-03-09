@@ -619,7 +619,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     let appHtml = '';
     const store = await runWithHtmlStore(async () => { appHtml = await renderNode(wrapped, hydrated); });
 
-    const pageTitle = resolveTitle(store.titleOps, 'SSR App');
+    const pageTitle = resolveTitle(store.titleOps, 'Nuke');
     const headLines = [
       '  <meta charset="utf-8" />',
       '  <meta name="viewport" content="width=device-width, initial-scale=1" />',

@@ -237,7 +237,7 @@ export async function serverSideRender(
   });
 
   // ── Head assembly ───────────────────────────────────────────────────────────
-  const pageTitle = resolveTitle(store.titleOps, 'SSR App');
+  const pageTitle = resolveTitle(store.titleOps, 'Nuke');
 
   const headLines: string[] = [
     '  <meta charset="utf-8" />',
