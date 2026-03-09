@@ -209,7 +209,7 @@ async function mountNodes(
   mods: ModuleMap,
   log:  ReturnType<typeof makeLogger>,
 ): Promise<void> {
-  const { hydrateRoot } = await import('react-dom/client');
+  const { hydrateRoot, createRoot } = await import('react-dom/client');
   const React = await import('react');
 
   const nodes = document.querySelectorAll<HTMLElement>('[data-hydrate-id]');
@@ -232,7 +232,19 @@ async function mountNodes(
 
     try {
       const element = React.default.createElement(Comp, await reconstructProps(rawProps, mods));
-      const root    = hydrateRoot(node, element);
+
+      // hydrateRoot reconciles against existing server HTML (initial page load).
+      // createRoot renders fresh when the span is empty (HMR path — server sent
+      // skipClientSSR=true so the span has no pre-rendered content to reconcile).
+      let root: ReactRoot;
+      if (node.innerHTML.trim()) {
+        root = hydrateRoot(node, element);
+      } else {
+        const r = createRoot(node);
+        r.render(element);
+        root = r;
+      }
+
       activeRoots.push(root);
       log.verbose('✓ Mounted:', id);
     } catch (err) {
