@@ -198,7 +198,12 @@ function clientUseHtml(options: HtmlOptions): void {
       if (tag.integrity)   el.integrity     = tag.integrity;
       if (tag.content)     el.textContent   = tag.content;
       el.dataset.usehtml = id;
-      document.head.appendChild(el);
+      // Respect position: 'body' scripts are appended at the end of <body>.
+      if (tag.position === 'body') {
+        document.body.appendChild(el);
+      } else {
+        document.head.appendChild(el);
+      }
       return el;
     });
     return () => nodes.forEach(n => n.remove());

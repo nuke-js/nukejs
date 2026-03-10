@@ -156,18 +156,32 @@ function renderStyleTag(tag: StyleTag): string {
 
 /**
  * Renders all useHtml()-sourced head tags wrapped in <!--n-head--> sentinels.
+ * Scripts with position='body' are excluded here — they go in renderManagedBodyScripts().
  * Returns an empty array when none of the stores have any tags (no sentinels
  * emitted for pages that don't call useHtml).
  */
 function renderManagedHeadTags(store: HtmlStore): string[] {
+  const headScripts = store.script.filter(s => (s.position ?? 'head') === 'head');
   const tags = [
     ...store.meta.map(renderMetaTag),
     ...store.link.map(renderLinkTag),
     ...store.style.map(renderStyleTag),
-    ...store.script.map(renderScriptTag),
+    ...headScripts.map(renderScriptTag),
   ];
   if (tags.length === 0) return [];
   return ['  <!--n-head-->', ...tags, '  <!--/n-head-->'];
+}
+
+/**
+ * Renders all useHtml()-sourced scripts with position='body', wrapped in
+ * <!--n-body-scripts-->…<!--/n-body-scripts--> sentinels.
+ * Injected just before </body> so scripts execute after page content is in the DOM.
+ * Returns an empty array when there are no body-position scripts.
+ */
+function renderManagedBodyScripts(store: HtmlStore): string[] {
+  const bodyScripts = store.script.filter(s => s.position === 'body');
+  if (bodyScripts.length === 0) return [];
+  return ['  <!--n-body-scripts-->', ...bodyScripts.map(renderScriptTag), '  <!--/n-body-scripts-->'];
 }
 
 // ─── Main SSR handler ─────────────────────────────────────────────────────────
@@ -250,7 +264,7 @@ export async function serverSideRender(
   });
 
   // ── Head assembly ───────────────────────────────────────────────────────────
-  const pageTitle = resolveTitle(store.titleOps, 'SSR App');
+  const pageTitle = resolveTitle(store.titleOps, 'NukeJS');
 
   const headLines: string[] = [
     '  <meta charset="utf-8" />',
@@ -271,6 +285,12 @@ export async function serverSideRender(
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e')
     .replace(/&/g, '\\u0026');
+
+  // ── Body scripts (position='body') ──────────────────────────────────────────
+  const bodyScriptLines = renderManagedBodyScripts(store);
+  const bodyScriptsHtml = bodyScriptLines.length > 0
+    ? '\n' + bodyScriptLines.join('\n') + '\n'
+    : '';
 
   // ── Full document ───────────────────────────────────────────────────────────
   const html = `<!DOCTYPE html>
@@ -302,7 +322,7 @@ ${openTag('body', store.bodyAttrs)}
   </script>
 
   ${isDev ? '<script type="module" src="/__hmr.js"></script>' : ''}
-</body>
+${bodyScriptsHtml}</body>
 </html>`;
 
   res.setHeader('Content-Type', 'text/html');

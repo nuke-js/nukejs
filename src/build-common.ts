@@ -619,20 +619,26 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     let appHtml = '';
     const store = await runWithHtmlStore(async () => { appHtml = await renderNode(wrapped, hydrated); });
 
-    const pageTitle = resolveTitle(store.titleOps, 'Nuke');
+    const pageTitle = resolveTitle(store.titleOps, 'NukeJS');
+    const headScripts = store.script.filter((s: any) => (s.position ?? 'head') === 'head');
+    const bodyScripts = store.script.filter((s: any) => s.position === 'body');
     const headLines = [
       '  <meta charset="utf-8" />',
       '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
       \`  <title>\${escapeHtml(pageTitle)}</title>\`,
-      ...(store.meta.length || store.link.length || store.style.length || store.script.length ? [
+      ...(store.meta.length || store.link.length || store.style.length || headScripts.length ? [
         '  <!--n-head-->',
         ...store.meta.map(renderMetaTag),
         ...store.link.map(renderLinkTag),
         ...store.style.map(renderStyleTag),
-        ...store.script.map(renderScriptTag),
+        ...headScripts.map(renderScriptTag),
         '  <!--/n-head-->',
       ] : []),
     ];
+    const bodyScriptLines = bodyScripts.length
+      ? ['  <!--n-body-scripts-->', ...bodyScripts.map(renderScriptTag), '  <!--/n-body-scripts-->']
+      : [];
+    const bodyScriptsHtml = bodyScriptLines.length ? '\\n' + bodyScriptLines.join('\\n') + '\\n' : '';
 
     const runtimeData = JSON.stringify({
       hydrateIds: [...hydrated], allIds: ALL_CLIENT_IDS, url, params, debug: 'silent',
@@ -664,7 +670,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const data = JSON.parse(document.getElementById('__n_data').textContent);
     await initRuntime(data);
   </script>
-</body>
+\${bodyScriptsHtml}</body>
 </html>\`;
 
     res.statusCode = 200;

@@ -76,6 +76,13 @@ export interface ScriptTag {
   crossOrigin?: string;
   integrity?:   string;
   noModule?:    boolean;
+  /**
+   * Where to inject the script in the document.
+   *   'head'  (default) — placed inside <head>, inside the <!--n-head--> block.
+   *   'body'            — placed at the very end of <body>, inside the
+   *                       <!--n-body-scripts--> block, just before </body>.
+   */
+  position?:    'head' | 'body';
 }
 
 export interface StyleTag {

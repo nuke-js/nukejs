@@ -294,10 +294,11 @@ function fingerprint(el: Element): string {
  * Diffs the live <!--n-head--> block against the incoming document's block and
  * applies the minimal set of DOM mutations:
  *
- *   - Tags present in `next` but not in `live` → inserted before <!--/n-head-->
- *     so they remain inside the tracked block on future navigations.
- *   - Tags present in `live` but not in `next` → removed.
- *   - Tags present in both → left untouched (no removal/re-insertion flash).
+ *   - Non-script tags (meta, link, style): fingerprint-diffed so shared layout
+ *     tags are left untouched (avoids stylesheet flash on navigation).
+ *   - Script tags: always removed and re-inserted as fresh elements so the
+ *     browser re-executes them and re-fetches any changed src file.
+ *     (Fingerprint diffing silently skips re-execution when src is unchanged.)
  *
  * If the live head has no sentinel block yet (e.g. initial page had no useHtml
  * tags), both sentinel comments are created on the fly.
@@ -305,12 +306,6 @@ function fingerprint(el: Element): string {
 function syncHeadTags(doc: Document): void {
   const live = headBlock(document.head);
   const next = headBlock(doc.head);
-
-  const liveMap = new Map<string, Element>();
-  for (const el of live.nodes) liveMap.set(fingerprint(el), el);
-
-  const nextMap = new Map<string, Element>();
-  for (const el of next.nodes) nextMap.set(fingerprint(el), el);
 
   // Ensure we have an anchor to insert before.
   let anchor = live.closeComment;
@@ -320,6 +315,24 @@ function syncHeadTags(doc: Document): void {
     document.head.appendChild(anchor);
   }
 
+  // ── Scripts: always replace ──────────────────────────────────────────────
+  // Remove all live script tags and re-insert fresh ones so the browser
+  // executes them. src gets cache-busted so the latest file is fetched.
+  for (const el of live.nodes)
+    if (el.tagName === 'SCRIPT') el.remove();
+
+  for (const el of next.nodes) {
+    if (el.tagName === 'SCRIPT')
+      document.head.insertBefore(cloneScriptForExecution(el), anchor);
+  }
+
+  // ── Everything else: fingerprint diff ────────────────────────────────────
+  const liveMap = new Map<string, Element>();
+  for (const el of live.nodes) if (el.tagName !== 'SCRIPT') liveMap.set(fingerprint(el), el);
+
+  const nextMap = new Map<string, Element>();
+  for (const el of next.nodes) if (el.tagName !== 'SCRIPT') nextMap.set(fingerprint(el), el);
+
   for (const [fp, el] of nextMap)
     if (!liveMap.has(fp)) document.head.insertBefore(el, anchor);
 
@@ -327,7 +340,95 @@ function syncHeadTags(doc: Document): void {
     if (!nextMap.has(fp)) el.remove();
 }
 
-// ─── SPA navigation ───────────────────────────────────────────────────────────
+/**
+ * Walks a <body> element and returns every Element node that lives between
+ * the <!--n-body-scripts--> and <!--/n-body-scripts--> sentinel comments,
+ * plus the closing comment node used as the insertion anchor.
+ *
+ * The SSR renderer emits these sentinels around every useHtml() body script
+ * so the client can manage exactly that set without touching permanent nodes.
+ */
+function bodyScriptsBlock(body: HTMLBodyElement | Element): { nodes: Element[]; closeComment: Comment | null } {
+  const nodes: Element[] = [];
+  let closeComment: Comment | null = null;
+  let inside = false;
+
+  for (const child of Array.from(body.childNodes)) {
+    if (child.nodeType === Node.COMMENT_NODE) {
+      const text = (child as Comment).data.trim();
+      if (text === 'n-body-scripts')  { inside = true;  continue; }
+      if (text === '/n-body-scripts') { closeComment = child as Comment; inside = false; continue; }
+    }
+    if (inside && child.nodeType === Node.ELEMENT_NODE)
+      nodes.push(child as Element);
+  }
+
+  return { nodes, closeComment };
+}
+
+/**
+ * Creates a fresh <script> element from a parsed source element so the browser
+ * actually executes it when inserted into the live document.
+ *
+ * Why: browsers only execute a <script> that is *created and inserted* into
+ * the live document. Nodes moved from a DOMParser document are auto-adopted
+ * but their script is silently skipped. Cloning via createElement is required.
+ *
+ * Cache-busting: src-based scripts get a ?t=<timestamp> query appended so the
+ * browser always fetches the latest version from the server on HMR updates,
+ * bypassing the module/response cache.
+ */
+function cloneScriptForExecution(src: Element): HTMLScriptElement {
+  const el = document.createElement('script');
+  for (const { name, value } of Array.from(src.attributes)) {
+    if (name === 'src') {
+      // Append a timestamp to force the browser to re-fetch the script file.
+      const url = new URL(value, location.href);
+      url.searchParams.set('t', String(Date.now()));
+      el.setAttribute('src', url.toString());
+    } else {
+      el.setAttribute(name, value);
+    }
+  }
+  // Copy inline content (for content-based scripts).
+  if (src.textContent) el.textContent = src.textContent;
+  return el;
+}
+
+/**
+ * Replaces all body scripts in the <!--n-body-scripts--> sentinel block with
+ * fresh elements from the incoming document.
+ *
+ * Unlike syncHeadTags (which diffs by fingerprint to avoid removing shared
+ * stylesheets), body scripts must ALWAYS be removed and re-inserted so that:
+ *   - File changes picked up by HMR are actually executed by the browser.
+ *   - src-based scripts are cache-busted so the browser re-fetches them.
+ *
+ * Fingerprint diffing would silently skip re-execution of any script whose
+ * src/attributes haven't changed, even if the file contents changed on disk.
+ */
+function syncBodyScripts(doc: Document): void {
+  const live = bodyScriptsBlock(document.body);
+  const next = bodyScriptsBlock(doc.body);
+
+  // Always remove every existing body script — never leave stale ones.
+  for (const el of live.nodes) el.remove();
+
+  // Ensure we have a sentinel anchor to insert before.
+  let anchor = live.closeComment;
+  if (!anchor) {
+    document.body.appendChild(document.createComment('n-body-scripts'));
+    anchor = document.createComment('/n-body-scripts');
+    document.body.appendChild(anchor);
+  }
+
+  // Insert every script from the incoming document as a brand-new element
+  // so the browser executes it. src gets a timestamp to bust any cache.
+  for (const el of next.nodes)
+    document.body.insertBefore(cloneScriptForExecution(el), anchor);
+}
+
+
 
 /**
  * Syncs attributes from a parsed element onto the live document element.
@@ -383,18 +484,21 @@ function setupNavigation(log: ReturnType<typeof makeLogger>): void {
       // 1. Head tags — diff-based sync preserves shared layout tags untouched.
       syncHeadTags(doc);
 
-      // 2. <html> and <body> attributes (lang, class, style, etc.).
+      // 2. Body scripts (position='body') — diff-based sync mirrors head tag logic.
+      syncBodyScripts(doc);
+
+      // 3. <html> and <body> attributes (lang, class, style, etc.).
       syncAttrs(document.documentElement, doc.documentElement);
       syncAttrs(document.body, doc.body);
 
-      // 3. Page content.
+      // 4. Page content.
       currApp.innerHTML = newApp.innerHTML;
 
-      // 4. <title>.
+      // 5. <title>.
       const newTitle = doc.querySelector('title');
       if (newTitle) document.title = newTitle.textContent ?? '';
 
-      // 5. Runtime data blob — must come after innerHTML swap so the new
+      // 6. Runtime data blob — must come after innerHTML swap so the new
       //    __n_data element is part of the live document.
       const newDataEl  = doc.getElementById('__n_data');
       const currDataEl = document.getElementById('__n_data');
