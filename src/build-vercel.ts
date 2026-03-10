@@ -82,7 +82,7 @@ const CJS_COMPAT_BANNER = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-type VercelRoute = { src: string; dest: string };
+type VercelRoute = { src: string; dest: string } | { handle: 'filesystem' };
 
 /** Writes a bundled dispatcher into a Vercel .func directory. */
 function emitVercelFunction(name: string, bundleText: string): void {
@@ -284,7 +284,9 @@ if (apiRoutes.length > 0) {
     fs.unlinkSync(dispatcherPath);
   }
 
-  // API routes are listed first — they win on any URL collision with pages.
+  // API routes are listed before pages in config.json so they win on any
+  // URL collision.  Static files in .vercel/output/static/ (app/public +
+  // framework bundles) are served by Vercel's CDN before any route is checked.
   for (const { srcRegex } of apiRoutes)
     vercelRoutes.push({ src: srcRegex, dest: '/api' });
 }
@@ -371,9 +373,13 @@ if (serverPages.length > 0) {
 
 // ─── Vercel config ────────────────────────────────────────────────────────────
 
+// `{ handle: 'filesystem' }` instructs Vercel's routing layer to check
+// .vercel/output/static/ BEFORE evaluating any of our dynamic route rules.
+// Without this, an optional catch-all like [[page]].tsx would intercept
+// /__n.js, /__react.js, and app/public/* before the CDN can serve them.
 fs.writeFileSync(
   path.join(OUTPUT_DIR, 'config.json'),
-  JSON.stringify({ version: 3, routes: vercelRoutes }, null, 2),
+  JSON.stringify({ version: 3, routes: [{ handle: 'filesystem' }, ...vercelRoutes] }, null, 2),
 );
 fs.writeFileSync(
   path.resolve('vercel.json'),

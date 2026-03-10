@@ -5,12 +5,13 @@
  *   1. Loads your nuke.config.ts (or uses sensible defaults)
  *   2. Discovers API route prefixes from your server directory
  *   3. Starts an HTTP server that handles:
+ *        app/public/**          — static files (highest priority, via middleware)
  *        /__hmr_ping            — heartbeat for HMR reconnect polling
  *        /__react.js            — bundled React + ReactDOM (resolved via importmap)
  *        /__n.js                — NukeJS client runtime bundle
  *        /__client-component/*  — on-demand "use client" component bundles
- *        /api/**                — API route handlers from serverDir
- *        /**                    — SSR pages from app/pages
+ *        server/**              — API route handlers from serverDir
+ *        /**                    — SSR pages from app/pages (lowest priority)
  *   4. Watches for file changes and broadcasts HMR events to connected browsers
  *
  * In production (ENVIRONMENT=production), HMR and all file watching are skipped.
@@ -125,11 +126,9 @@ const server = http.createServer(async (req, res) => {
 
     const url = req.url || '/';
 
-    // API routes — prefixes discovered from serverDir take priority over pages.
-    if (matchApiPrefix(url, apiPrefixes))
-      return await handleApiRoute(url, req, res);
-
     // ── Internal NukeJS routes ──────────────────────────────────────────────
+    // Framework files are checked before server routes so a user route can
+    // never accidentally shadow /__n.js, /__react.js, etc.
 
     // Heartbeat polled by the HMR client to know when the server is back up.
     if (url === '/__hmr_ping') {
@@ -156,8 +155,13 @@ const server = http.createServer(async (req, res) => {
         res,
       );
 
+    // ── Server routes ───────────────────────────────────────────────────────
+    // API routes from serverDir — checked after framework files, before pages.
+    if (matchApiPrefix(url, apiPrefixes))
+      return await handleApiRoute(url, req, res);
+
     // ── Page SSR ────────────────────────────────────────────────────────────
-    // No API prefix matched — render a page from app/pages.
+    // Nothing above matched — render a page from app/pages.
     return await serverSideRender(url, res, PAGES_DIR, isDev);
 
   } catch (error) {

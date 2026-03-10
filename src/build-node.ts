@@ -6,7 +6,7 @@
  *
  * Output layout:
  *   dist/
- *     index.mjs          ← HTTP server entry point
+ *     index.mjs          ← HTTP server entry point (routing: static → framework → api → pages)
  *     manifest.json      ← Route → handler mapping
  *     api/<route>.mjs    ← Bundled API handlers
  *     pages/<route>.mjs  ← Bundled page handlers
@@ -170,22 +170,10 @@ const server = http.createServer(async (req, res) => {
   const url   = req.url || '/';
   const clean = url.split('?')[0];
 
-  // Internal assets: /__n.js and /__client-component/*
-  if (clean === '/__n.js' || clean.startsWith('/__client-component/')) {
-    const filePath = path.join(STATIC_DIR, clean);
-    if (fs.existsSync(filePath)) {
-      res.setHeader('Content-Type', MIME_MAP[path.extname(filePath)] ?? 'application/javascript');
-      res.end(fs.readFileSync(filePath));
-      return;
-    }
-    res.statusCode = 404;
-    res.end('Not found');
-    return;
-  }
-
-  // Public static files from app/public/.
-  // path.join normalises '..' segments before the startsWith guard,
-  // preventing directory traversal.
+  // 1. Static files — app/public/ files are copied into STATIC_DIR last at
+  //    build time (after framework bundles), so they take priority over
+  //    framework files on name collision.  path.join normalises '..' segments
+  //    before the startsWith guard, preventing directory traversal.
   {
     const candidate  = path.join(STATIC_DIR, clean);
     const staticBase = STATIC_DIR.endsWith(path.sep) ? STATIC_DIR : STATIC_DIR + path.sep;
@@ -201,7 +189,8 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // Route dispatch.
+  // 2. Route dispatch — API routes appear before page routes in the manifest
+  //    (built in build-node.ts), so they are matched first.
   for (const { regex, paramNames, catchAllNames, handler } of compiled) {
     const m = clean.match(regex);
     if (!m) continue;
