@@ -1,16 +1,10 @@
 /**
  * builder.ts — NukeJS Package Build Script
  *
- * Compiles the NukeJS source into dist/ with two separate esbuild passes:
- *
- *   Pass 1 (main):  All src/ files excluding as-is/, compiled to Node ESM.
- *   Pass 2 (as-is): Link.tsx + useRouter.ts compiled to browser-neutral ESM,
- *                   then the original .ts/.tsx sources are also copied into
- *                   dist/as-is/ so end-users can reference them directly.
- *
- * After both passes, processDist() rewrites bare relative imports
- * (e.g. `from './utils'`) to include .js extensions, which is required for
- * Node's strict ESM resolver.
+ * Compiles the NukeJS source into dist/ via a single esbuild pass targeting
+ * Node ESM, followed by processDist() which rewrites bare relative imports
+ * (e.g. `from './utils'`) to include .js extensions as required by Node's
+ * strict ESM resolver.
  *
  * Finally, `tsc --emitDeclarationOnly` generates .d.ts files for consumers.
  */
@@ -24,7 +18,6 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.resolve(__dirname, '');
 const outDir = path.resolve(__dirname, '../dist');
-const AS_IS = 'as-is';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -48,50 +41,25 @@ function collectFiles(dir: string, exclude: string[] = []): string[] {
   return files;
 }
 
-/**
- * Copies a directory recursively, preserving structure.
- * Used to place the original as-is .ts/.tsx sources into dist/as-is/
- * so end-users can read and copy them.
- */
-function copyDir(src: string, dest: string): void {
-  if (!fs.existsSync(src)) return;
-  fs.mkdirSync(dest, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const s = path.join(src, entry.name);
-    const d = path.join(dest, entry.name);
-    entry.isDirectory() ? copyDir(s, d) : fs.copyFileSync(s, d);
-  }
-}
+// ─── Post-process .js files ───────────────────────────────────────────────────
 
-// --- Post-process .js files ---
+/** Rewrites bare relative imports to include .js extensions for Node ESM. */
 function processDist(dir: string) {
-  const excludeFolder = "as-is";
-
   (function walk(currentDir: string) {
     fs.readdirSync(currentDir, { withFileTypes: true }).forEach((d) => {
       const fullPath = path.join(currentDir, d.name);
-
       if (d.isDirectory()) {
-        if (d.name !== excludeFolder) walk(fullPath);
-      } else if (fullPath.endsWith(".js")) {
-        let content = fs.readFileSync(fullPath, "utf-8");
-
-        // Replace import/export paths ending with .ts → .js, skip paths containing excludeFolder
-        content = content.replace(
-          /from\s+['"](\.\/(?!as-is\/).*?)['"]/g,
-          'from "$1.js"'
-        );
-        content = content.replace(
-          /import\(['"](\.\/(?!as-is\/).*?)['"]\)/g,
-          'import("$1.js")'
-        );
-
-        fs.writeFileSync(fullPath, content, "utf-8");
+        walk(fullPath);
+      } else if (fullPath.endsWith('.js')) {
+        let content = fs.readFileSync(fullPath, 'utf-8');
+        content = content.replace(/from\s+['"](\.\/.*?)['"]/g, 'from "$1.js"');
+        content = content.replace(/import\(['"](\.\/.*?)['"]\)/g, 'import("$1.js")');
+        fs.writeFileSync(fullPath, content, 'utf-8');
       }
     });
   })(dir);
 
-  console.log("🔧 Post-processing done: .ts imports → .js (excluding as-is folder).");
+  console.log('🔧 Post-processing done: relative imports → .js extensions.');
 }
 
 // ─── Build ────────────────────────────────────────────────────────────────────
@@ -100,10 +68,9 @@ async function runBuild(): Promise<void> {
   try {
     cleanDist(outDir);
 
-    // Pass 1: main source (Node platform, no JSX needed)
-    console.log('🚀  Building main sources…');
+    console.log('🚀  Building sources…');
     await build({
-      entryPoints: collectFiles(srcDir, [AS_IS]),
+      entryPoints: collectFiles(srcDir),
       outdir: outDir,
       platform: 'node',
       format: 'esm',
@@ -111,30 +78,10 @@ async function runBuild(): Promise<void> {
       packages: 'external',
       sourcemap: true,
     });
-    console.log('✅  Main build done.');
+    console.log('✅  Build done.');
 
-    // Pass 2: as-is sources (browser-neutral, needs JSX)
-    console.log('🚀  Building as-is sources…');
-    await build({
-      entryPoints: collectFiles(path.join(srcDir, AS_IS)),
-      outdir: path.join(outDir, AS_IS),
-      platform: 'neutral',
-      format: 'esm',
-      target: ['node20'],
-      packages: 'external',
-      jsx: 'automatic',
-      sourcemap: true,
-    });
-    console.log('✅  as-is build done.');
-
-    // Copy original .ts/.tsx sources into dist/as-is/ for end-user reference
-    copyDir(path.join(srcDir, AS_IS), path.join(outDir, AS_IS));
-    console.log(`📁  Copied as-is sources → dist/${AS_IS}/`);
-
-    // Fix ESM import extensions across all compiled output
     processDist(outDir);
 
-    // Emit .d.ts declaration files
     console.log('📄  Generating TypeScript declarations…');
     execSync('tsc --emitDeclarationOnly --declaration --outDir dist', { stdio: 'inherit' });
 

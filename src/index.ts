@@ -11,7 +11,7 @@ export type {
     StyleTag,
 } from './use-html';
 
-export { default as useRouter } from './useRouter';
+export { default as useRouter } from './use-router';
 
 export { default as Link } from './Link';
 

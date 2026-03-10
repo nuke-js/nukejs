@@ -1,5 +1,5 @@
 "use client"
-import useRouter from "./useRouter"
+import useRouter from "./use-router"
 
 const Link = ({ href, children, className }: {
     href: string;
