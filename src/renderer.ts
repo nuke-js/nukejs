@@ -24,7 +24,6 @@
  */
 
 import path from 'path';
-import fs from 'fs';
 import { createElement, Fragment } from 'react';
 import { renderToString } from 'react-dom/server';
 import { log } from './logger';
@@ -174,10 +173,9 @@ async function renderFunctionComponent(
     const info = componentCache.get(filePath);
     if (!info?.isClientComponent) continue;
 
-    // Match by default export function name.
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const match   = content.match(/export\s+default\s+(?:function\s+)?(\w+)/);
-    if (!match?.[1] || type.name !== match[1]) continue;
+    // Match by default export function name (cached — handles both source and
+    // esbuild-compiled formats; see component-analyzer.getExportedDefaultName).
+    if (!info.exportedName || type.name !== info.exportedName) continue;
 
     // This is a client boundary.
     try {
@@ -269,9 +267,7 @@ function serializeReactElement(element: any, registry: Map<string, string>): any
     for (const [id, filePath] of registry.entries()) {
       const info = componentCache.get(filePath);
       if (!info?.isClientComponent) continue;
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const match   = content.match(/export\s+default\s+(?:function\s+)?(\w+)/);
-      if (match?.[1] && type.name === match[1]) {
+      if (info.exportedName && type.name === info.exportedName) {
         return {
           __re:        'client',
           componentId: id,

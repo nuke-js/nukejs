@@ -215,10 +215,29 @@ export function findPageLayouts(routeFilePath: string, pagesDir: string): string
 /**
  * Extracts the identifier used as the default export from a component file.
  * Returns null when no default export is found.
+ *
+ * Handles three formats so that components compiled by esbuild are recognised
+ * alongside hand-written source files:
+ *   1. Source:   `export default function Foo` / `export default Foo`
+ *   2. esbuild:  `var Foo_default = Foo`  (compiled arrow-function component)
+ *   3. Re-export: `export { Foo as default }`
  */
 export function extractDefaultExportName(filePath: string): string | null {
   const content = fs.readFileSync(filePath, 'utf-8');
-  return content.match(/export\s+default\s+(?:function\s+)?(\w+)/)?.[1] ?? null;
+
+  // Format 1 – source: `export default function Foo` or `export default Foo`
+  let m = content.match(/export\s+default\s+(?:function\s+)?(\w+)/);
+  if (m?.[1]) return m[1];
+
+  // Format 2 – esbuild compiled: `var Foo_default = Foo`
+  m = content.match(/var\s+\w+_default\s*=\s*(\w+)/);
+  if (m?.[1]) return m[1];
+
+  // Format 3 – explicit re-export: `export { Foo as default }`
+  m = content.match(/export\s*\{[^}]*\b(\w+)\s+as\s+default\b[^}]*\}/);
+  if (m?.[1] && !m[1].endsWith('_default')) return m[1];
+
+  return null;
 }
 
 // ─── Server page collection ───────────────────────────────────────────────────
@@ -431,6 +450,8 @@ export function makePageAdapterSource(opts: PageAdapterOptions): string {
 
   return `\
 import type { IncomingMessage, ServerResponse } from 'http';
+import { createElement as __createElement__ } from 'react';
+import { renderToString as __renderToString__ } from 'react-dom/server';
 import * as __page__ from ${pageImport};
 ${layoutImports}
 
@@ -578,7 +599,7 @@ async function renderNode(node: any, hydrated: Set<string>): Promise<string> {
       const serializedProps = serializeProps(props ?? {});
       let ssrHtml: string;
       try {
-        ssrHtml = await renderNode(await (type as Function)(props || {}), new Set());
+        ssrHtml = __renderToString__(__createElement__(type as any, props || {}));
       } catch {
         ssrHtml = PRERENDERED_HTML[clientId] ?? '';
       }

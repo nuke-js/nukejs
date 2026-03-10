@@ -11,9 +11,9 @@ export type {
     StyleTag,
 } from './use-html';
 
-export { default as useRouter } from './as-is/useRouter';
+export { default as useRouter } from './useRouter';
 
-export { default as Link } from './as-is/Link';
+export { default as Link } from './Link';
 
 // ─── Client runtime (browser bootstrap) ────────────────────────────────────
 export { setupLocationChangeMonitor, initRuntime } from './bundle';

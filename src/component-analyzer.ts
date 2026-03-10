@@ -40,6 +40,12 @@ export interface ComponentInfo {
   isClientComponent:  boolean;
   /** Stable hash-based ID, present only for client components. */
   clientComponentId?: string;
+  /**
+   * The name of the default-exported component function.
+   * Handles both source format (`export default Link`) and esbuild's compiled
+   * format (`var Link_default = Link; export { Link_default as default }`).
+   */
+  exportedName?:      string;
 }
 
 // ─── In-process cache ─────────────────────────────────────────────────────────
@@ -80,6 +86,35 @@ function getClientComponentId(filePath: string, pagesDir: string): string {
     .substring(0, 8);
 }
 
+// ─── Default export name extraction ──────────────────────────────────────────
+
+/**
+ * Extracts the name of the default-exported function from a component file.
+ *
+ * Handles three formats:
+ *   1. Source:   `export default function Link(…)` or `export default Link`
+ *   2. esbuild:  `var Link_default = Link;`  (compiled arrow-function component)
+ *   3. Re-export: `export { Link as default }`
+ */
+function getExportedDefaultName(filePath: string): string | undefined {
+  const content = fs.readFileSync(filePath, 'utf-8');
+
+  // Format 1 – source files: `export default function Foo` or `export default Foo`
+  let m = content.match(/export\s+default\s+(?:function\s+)?(\w+)/);
+  if (m?.[1]) return m[1];
+
+  // Format 2 – esbuild compiled arrow components: `var Foo_default = Foo`
+  // esbuild renames the variable to `<name>_default` and keeps the original name.
+  m = content.match(/var\s+\w+_default\s*=\s*(\w+)/);
+  if (m?.[1]) return m[1];
+
+  // Format 3 – explicit re-export: `export { Foo as default }`
+  m = content.match(/export\s*\{[^}]*\b(\w+)\s+as\s+default\b[^}]*\}/);
+  if (m?.[1] && !m[1].endsWith('_default')) return m[1];
+
+  return undefined;
+}
+
 // ─── Analysis ─────────────────────────────────────────────────────────────────
 
 /**
@@ -96,6 +131,7 @@ export function analyzeComponent(filePath: string, pagesDir: string): ComponentI
     filePath,
     isClientComponent:  isClient,
     clientComponentId: isClient ? getClientComponentId(filePath, pagesDir) : undefined,
+    exportedName:      isClient ? getExportedDefaultName(filePath) : undefined,
   };
 
   componentCache.set(filePath, info);
