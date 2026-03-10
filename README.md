@@ -21,6 +21,7 @@ npm create nuke@latest
 - [Static Files](#static-files)
 - [useHtml() — Head Management](#usehtml--head-management)
 - [Configuration](#configuration)
+- [Link Component & Navigation](#link-component--navigation)
 - [Building & Deploying](#building--deploying)
 
 ## Overview
@@ -153,6 +154,28 @@ export default async function BlogPost({ slug }: { slug: string }) {
 ```
 
 Route params are passed as props to the component.
+
+### Query string params
+
+Query string parameters are automatically merged into the page component's props alongside route params. If a query param shares a name with a route param, the route param takes precedence.
+
+```tsx
+// app/pages/search.tsx
+// URL: /search?q=nuke&page=2
+export default function Search({ q, page }: { q: string; page: string }) {
+  return <h1>Results for "{q}" — page {page}</h1>;
+}
+```
+
+```tsx
+// app/pages/blog/[slug].tsx
+// URL: /blog/hello-world?preview=true
+export default function BlogPost({ slug, preview }: { slug: string; preview?: string }) {
+  return <article data-preview={preview}>{slug}</article>;
+}
+```
+
+A query param that appears multiple times (e.g. `?tag=a&tag=b`) is passed as a `string[]`.
 
 ### Catch-all routes
 
@@ -389,13 +412,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 | `nuke build` (Node) | Copied to `dist/static/` and served by the production HTTP server |
 | `nuke build` (Vercel) | Copied to `.vercel/output/static/` — served by Vercel's CDN, no function invocation |
 
-On Vercel, public files receive the same zero-latency CDN treatment as `__react.js` and `__n.js`.
+On Vercel, public files receive the same zero-latency CDN treatment as `__n.js`.
 
 ---
 
 ## useHtml() — Head Management
 
-The `useHtml()` hook works in both server components and client components to control the document head.
+The `useHtml()` hook works in both server components and client components to control the document `<head>`, `<html>` attributes, `<body>` attributes, and scripts injected at the end of `<body>`.
 
 ```tsx
 import { useHtml } from 'nukejs';
@@ -433,6 +456,65 @@ Result: "Home | Site"
 ```
 
 The page title always serves as the base value; layout functions wrap it outward.
+
+### Script injection & position
+
+The `script` option accepts an array of script tags. Each entry supports the standard attributes (`src`, `type`, `async`, `defer`, `content` for inline scripts, etc.) plus a `position` field:
+
+| `position` | Where it's injected |
+|---|---|
+| `'head'` (default) | Inside `<head>`, in the managed `<!--n-head-->` block |
+| `'body'` | End of `<body>`, just before `</body>`, in the `<!--n-body-scripts-->` block |
+
+**Use `position: 'body'`** for third-party analytics and tracking scripts (Google Analytics, Hotjar, Intercom, etc.) that should load after page content is in the DOM and must not block rendering.
+
+```tsx
+// app/pages/layout.tsx — Google Analytics on every page
+import { useHtml } from 'nukejs';
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  useHtml({
+    script: [
+      // Load the gtag library — async so it doesn't block rendering
+      {
+        src: 'https://www.googletagmanager.com/gtag/js?id=G-XXXXXXXXXX',
+        async: true,
+        position: 'body',
+      },
+      // Inline initialisation — must follow the loader above
+      {
+        content: `
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('js', new Date());
+          gtag('config', 'G-XXXXXXXXXX');
+        `,
+        position: 'body',
+      },
+    ],
+  });
+
+  return <>{children}</>;
+}
+```
+
+**Use `position: 'head'` (the default)** for scripts that must run before first paint, such as theme detection to avoid flash-of-unstyled-content:
+
+```tsx
+useHtml({
+  script: [
+    {
+      content: `
+        const theme = localStorage.getItem('theme') ?? 'light';
+        document.documentElement.classList.add(theme);
+      `,
+      // position defaults to 'head' — runs before the page renders
+    },
+  ],
+});
+```
+
+Both head and body scripts are re-executed on every HMR update and SPA navigation so they always reflect the current page state.
 
 ---
 
@@ -512,8 +594,7 @@ dist/
 ├── api/            # Bundled API route handlers (.mjs)
 ├── pages/          # Bundled page handlers (.mjs)
 ├── static/
-│   ├── __react.js          # Bundled React runtime
-│   ├── __n.js              # NukeJS client runtime
+│   ├── __n.js              # NukeJS client runtime (React + NukeJS bundled together)
 │   ├── __client-component/ # Bundled "use client" component files
 │   └── <app/public files>  # Copied from app/public/ at build time
 ├── manifest.json   # Route dispatch table
@@ -521,6 +602,7 @@ dist/
 ```
 
 ### Vercel
+
 Just import the code from GitHub.
 
 ### Environment variables
