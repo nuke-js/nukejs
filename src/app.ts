@@ -65,21 +65,8 @@ if (isDev) watchDir(path.resolve('./app'), 'App');
 // the server directory changes so handlers always see the latest routes without
 // a full restart.
 const apiPrefixes    = discoverApiPrefixes(SERVER_DIR);
-const handleApiRoute = createApiHandler({ apiPrefixes, port: PORT });
+const handleApiRoute = createApiHandler({ apiPrefixes, port: PORT, isDev });
 
-if (isDev && existsSync(SERVER_DIR)) {
-  watch(SERVER_DIR, { recursive: true }, (_event, filename) => {
-    if (!filename) return;
-
-    // Only react to TypeScript source changes, not compiled output or assets.
-    const ext = path.extname(filename);
-    if (ext !== '.ts' && ext !== '.tsx') return;
-
-    const fresh = discoverApiPrefixes(SERVER_DIR);
-    apiPrefixes.splice(0, apiPrefixes.length, ...fresh);
-    log.info('[Server] Routes updated (' + fresh.length + ' prefix' + (fresh.length === 1 ? '' : 'es') + ')');
-  });
-}
 
 log.info(`API prefixes discovered: ${apiPrefixes.length === 0 ? 'none' : ''}`);
 apiPrefixes.forEach(p => {

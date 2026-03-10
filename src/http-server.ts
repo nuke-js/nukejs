@@ -29,6 +29,7 @@
 import path from 'path';
 import fs from 'fs';
 import { pathToFileURL } from 'url';
+import { build } from 'esbuild';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { log } from './logger';
 import { matchRoute } from './router';
@@ -238,22 +239,46 @@ export function matchApiPrefix(
   return null;
 }
 
+// ─── Dev-mode handler importer ────────────────────────────────────────────────
+
+// ─── Dev-mode fresh importer ──────────────────────────────────────────────────
+
+/**
+ * Bundles `filePath` + all its local transitive imports into a single ESM
+ * string via esbuild on every call, writes it to a unique temp file, imports
+ * it, then deletes the temp file.
+ *
+ * Why esbuild bundling and not ?t=timestamp:
+ *   Node's ESM cache is keyed on the full URL string. ?t=timestamp busts only
+ *   the entry file — every `import './other'` inside it resolves from cache as
+ *   normal. Bundling inlines all local deps so there are no transitive cache
+ *   hits at all. npm packages are kept external (packages: 'external') because
+ *   they live in node_modules and never change between requests.
+ */
+async function importFreshInDev(filePath: string): Promise<ApiModule> {
+  const result = await build({
+    entryPoints: [filePath],
+    bundle:      true,
+    format:      'esm',
+    platform:    'node',
+    target:      'node20',
+    packages:    'external',
+    write:       false,
+  });
+
+  const dataUrl = `data:text/javascript,${encodeURIComponent(result.outputFiles[0].text)}`;
+  return await import(dataUrl) as ApiModule;
+}
+
 // ─── Request handler factory ──────────────────────────────────────────────────
 
 interface ApiHandlerOptions {
   apiPrefixes: ApiPrefixInfo[];
   port:        number;
+  isDev:       boolean;
 }
 
-/**
- * Creates the main API request dispatcher.  The returned function:
- *
- *   1. Finds the matching prefix for the URL.
- *   2. Resolves the exact handler file (direct file path, index, or dynamic route).
- *   3. Dynamically imports the module (always fresh in dev thanks to file: URLs).
- *   4. Calls the method-specific export (GET, POST, …) or `default`.
- */
-export function createApiHandler({ apiPrefixes, port }: ApiHandlerOptions) {
+export function createApiHandler({ apiPrefixes, port, isDev }: ApiHandlerOptions) {
   return async function handleApiRoute(
     url: string,
     req: IncomingMessage,
@@ -308,9 +333,9 @@ export function createApiHandler({ apiPrefixes, port }: ApiHandlerOptions) {
       apiReq.params = params;
       apiReq.query  = parseQuery(url, port);
 
-      // Dynamic import is always fresh because each path includes a unique
-      // file:// URL — Node will not serve a stale cached module.
-      const apiModule: ApiModule = await import(pathToFileURL(filePath).href);
+      const apiModule: ApiModule = isDev
+        ? await importFreshInDev(filePath)
+        : await import(pathToFileURL(filePath).href);
       const handler = apiModule[method] ?? apiModule.default;
 
       if (!handler) {
