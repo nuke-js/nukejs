@@ -1,4 +1,4 @@
-import Link from "../../../src/as-is/Link"
+import Link from "../../../src/Link"
 import Counter from "../components/Counter"
 import Nav from "../components/Nav"
 import Posts from "../components/Posts"

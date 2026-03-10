@@ -1,4 +1,4 @@
-import Link from "../../../src/as-is/Link";
+import Link from "../../../src/Link";
 
 export default function About(){
     return <>
