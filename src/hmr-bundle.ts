@@ -106,7 +106,10 @@ function navigate(href: string): void {
  * in param names are never mistaken for regex metacharacters.
  */
 function patternMatchesPathname(pattern: string, pathname: string): boolean {
-  const segments   = pattern.replace(/^\//, '').split('/');
+  // Normalise trailing slashes so /a/ matches pattern /a and vice versa.
+  const normPattern  = pattern.length  > 1 ? pattern.replace(/\/+$/, '')  : pattern;
+  const normPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
+  const segments   = normPattern.replace(/^\//, '').split('/');
   const regexParts = segments.map(seg => {
     if (/^\[\[\.\.\..+\]\]$/.test(seg)) return '(?:\/.*)?' ;  // [[...x]] optional catch-all
     if (/^\[\.\.\./.test(seg))            return '(?:\/.+)' ;   // [...x]   required catch-all
@@ -114,7 +117,7 @@ function patternMatchesPathname(pattern: string, pathname: string): boolean {
     if (/^\[/.test(seg))                    return '\/[^/]+' ;     // [x]      required single
     return '\/' + seg.replace(/[.+?^${}()|[\]\\]/g, '\\$&'); // static — escape metacharacters
   });
-  return new RegExp('^' + regexParts.join('') + '$').test(pathname);
+  return new RegExp('^' + regexParts.join('') + '$').test(normPathname);
 }
 
 // ─── Reconnect polling ────────────────────────────────────────────────────────
@@ -126,7 +129,7 @@ function patternMatchesPathname(pattern: string, pathname: string): boolean {
  *
  * Gives up after `maxAttempts` (default ~15 seconds at 500 ms intervals).
  */
-function waitForReconnect(intervalMs = 500, maxAttempts = 30): void {
+function waitForReconnect(intervalMs = 3000, maxAttempts = 10): void {
   let attempts = 0;
 
   const id = setInterval(async () => {

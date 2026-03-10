@@ -206,13 +206,14 @@ export function matchRoute(
     return { filePath: exactPath, params: {}, routePattern: segments.join('/') };
   }
 
-  // 2. Dynamic match — try routes sorted by specificity so '[id]' wins over '[...all]'.
+  // 2. Dynamic match — use rawSegments (not ['index']) so that [param] routes
+  //    do not accidentally match '/' by consuming the synthetic 'index' segment.
   const sortedRoutes = findAllRoutes(baseDir).sort(
     (a, b) => getRouteSpecificity(b) - getRouteSpecificity(a),
   );
 
   for (const route of sortedRoutes) {
-    const match = matchDynamicRoute(segments, route);
+    const match = matchDynamicRoute(rawSegments, route);
     if (!match) continue;
     const filePath = path.join(baseDir, route) + extension;
     if (!isWithinBase(baseDir, filePath)) continue;
