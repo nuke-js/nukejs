@@ -29,7 +29,6 @@
 import path from 'path';
 import fs from 'fs';
 import { pathToFileURL } from 'url';
-import { build } from 'esbuild';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { log } from './logger';
 import { matchRoute } from './router';
@@ -39,23 +38,23 @@ import { matchRoute } from './router';
 /** Describes a single API prefix discovered in serverDir. */
 export interface ApiPrefixInfo {
   /** URL prefix this entry handles (e.g. '/users', ''). */
-  prefix:     string;
+  prefix: string;
   /** Directory to scan for route files. */
-  directory:  string;
+  directory: string;
   /** Set when the prefix comes from a top-level file (not a directory). */
-  filePath?:  string;
+  filePath?: string;
 }
 
 /** Node's IncomingMessage with parsed body, params, and query. */
 export interface ApiRequest extends IncomingMessage {
   params?: Record<string, string | string[]>;
-  query?:  Record<string, string>;
-  body?:   any;
+  query?: Record<string, string>;
+  body?: any;
 }
 
 /** Node's ServerResponse with json() and status() convenience methods. */
 export interface ApiResponse extends ServerResponse {
-  json:   (data: any, status?: number) => void;
+  json: (data: any, status?: number) => void;
   status: (code: number) => ApiResponse;
 }
 
@@ -64,11 +63,11 @@ type ApiHandler = (req: ApiRequest, res: ApiResponse) => void | Promise<void>;
 
 interface ApiModule {
   default?: ApiHandler;
-  GET?:     ApiHandler;
-  POST?:    ApiHandler;
-  PUT?:     ApiHandler;
-  DELETE?:  ApiHandler;
-  PATCH?:   ApiHandler;
+  GET?: ApiHandler;
+  POST?: ApiHandler;
+  PUT?: ApiHandler;
+  DELETE?: ApiHandler;
+  PATCH?: ApiHandler;
   OPTIONS?: ApiHandler;
 }
 
@@ -87,7 +86,7 @@ export function discoverApiPrefixes(serverDir: string): ApiPrefixInfo[] {
     return [];
   }
 
-  const entries  = fs.readdirSync(serverDir, { withFileTypes: true });
+  const entries = fs.readdirSync(serverDir, { withFileTypes: true });
   const prefixes: ApiPrefixInfo[] = [];
 
   // Directories first (higher specificity than same-stem files).
@@ -107,9 +106,9 @@ export function discoverApiPrefixes(serverDir: string): ApiPrefixInfo[] {
     ) {
       const stem = e.name.replace(/\.tsx?$/, '');
       prefixes.push({
-        prefix:    `/${stem}`,
+        prefix: `/${stem}`,
         directory: serverDir,
-        filePath:  path.join(serverDir, e.name),
+        filePath: path.join(serverDir, e.name),
       });
     }
   }
@@ -137,7 +136,7 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
  */
 export async function parseBody(req: IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
-    let body  = '';
+    let body = '';
     let bytes = 0;
 
     req.on('data', chunk => {
@@ -189,8 +188,8 @@ export function parseQuery(url: string, port: number): Record<string, string> {
  * mirroring the Express API surface that most API handlers expect.
  */
 export function enhanceResponse(res: ServerResponse): ApiResponse {
-  const apiRes    = res as ApiResponse;
-  apiRes.json   = function (data, statusCode = 200) {
+  const apiRes = res as ApiResponse;
+  apiRes.json = function (data, statusCode = 200) {
     this.statusCode = statusCode;
     this.setHeader('Content-Type', 'application/json');
     this.end(JSON.stringify(data));
@@ -239,43 +238,31 @@ export function matchApiPrefix(
   return null;
 }
 
-// ─── Dev-mode handler importer ────────────────────────────────────────────────
-
 // ─── Dev-mode fresh importer ──────────────────────────────────────────────────
 
 /**
- * Bundles `filePath` + all its local transitive imports into a single ESM
- * string via esbuild on every call, writes it to a unique temp file, imports
- * it, then deletes the temp file.
+ * Imports `filePath` fresh on every call using tsx's tsImport, which creates
+ * an isolated module namespace that bypasses Node's ESM cache entirely.
  *
- * Why esbuild bundling and not ?t=timestamp:
- *   Node's ESM cache is keyed on the full URL string. ?t=timestamp busts only
- *   the entry file — every `import './other'` inside it resolves from cache as
- *   normal. Bundling inlines all local deps so there are no transitive cache
- *   hits at all. npm packages are kept external (packages: 'external') because
- *   they live in node_modules and never change between requests.
+ * This is identical to how ssr.ts loads page and layout modules in dev mode.
+ * tsx handles TypeScript and TSX natively, and bare specifiers (e.g.
+ * "@orpc/server/node") resolve normally through the standard node_modules
+ * chain — no bundling, no temp files, no watchers needed.
  */
 async function importFreshInDev(filePath: string): Promise<ApiModule> {
-  const result = await build({
-    entryPoints: [filePath],
-    bundle:      true,
-    format:      'esm',
-    platform:    'node',
-    target:      'node20',
-    packages:    'external',
-    write:       false,
-  });
-
-  const dataUrl = `data:text/javascript,${encodeURIComponent(result.outputFiles[0].text)}`;
-  return await import(dataUrl) as ApiModule;
+  const { tsImport } = await import('tsx/esm/api');
+  return await tsImport(
+    pathToFileURL(filePath).href,
+    { parentURL: import.meta.url },
+  ) as ApiModule;
 }
 
 // ─── Request handler factory ──────────────────────────────────────────────────
 
 interface ApiHandlerOptions {
   apiPrefixes: ApiPrefixInfo[];
-  port:        number;
-  isDev:       boolean;
+  port: number;
+  isDev: boolean;
 }
 
 export function createApiHandler({ apiPrefixes, port, isDev }: ApiHandlerOptions) {
@@ -284,8 +271,8 @@ export function createApiHandler({ apiPrefixes, port, isDev }: ApiHandlerOptions
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    const apiRes    = enhanceResponse(res);
-    const apiMatch  = matchApiPrefix(url, apiPrefixes);
+    const apiRes = enhanceResponse(res);
+    const apiMatch = matchApiPrefix(url, apiPrefixes);
 
     if (!apiMatch) {
       apiRes.json({ error: 'API endpoint not found' }, 404);
@@ -294,7 +281,7 @@ export function createApiHandler({ apiPrefixes, port, isDev }: ApiHandlerOptions
 
     const { prefix, apiPath } = apiMatch;
     let filePath: string | null = null;
-    let params:   Record<string, string | string[]> = {};
+    let params: Record<string, string | string[]> = {};
 
     // 1. Direct file match (top-level file prefix, e.g. server/auth.ts → /auth).
     if (prefix.filePath) {
@@ -328,10 +315,10 @@ export function createApiHandler({ apiPrefixes, port, isDev }: ApiHandlerOptions
       if (method === 'OPTIONS') { respondOptions(apiRes); return; }
 
       // Augment the request object with parsed body, params, and query.
-      const apiReq    = req as ApiRequest;
-      apiReq.body   = await parseBody(req);
+      const apiReq = req as ApiRequest;
+      apiReq.body = await parseBody(req);
       apiReq.params = params;
-      apiReq.query  = parseQuery(url, port);
+      apiReq.query = parseQuery(url, port);
 
       const apiModule: ApiModule = isDev
         ? await importFreshInDev(filePath)
