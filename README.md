@@ -1,6 +1,7 @@
 [![NukeJS Banner](.github/banner.png)](https://nukejs.com)
 
-# NukeJS
+# NukeJS ![npm](https://img.shields.io/npm/v/nukejs?color=green) [![website](https://img.shields.io/badge/nukejs.com-→-orange)](https://nukejs.com) [<img src="https://developer.stackblitz.com/img/open_in_stackblitz.svg" height="20">](https://stackblitz.com/edit/nuke?file=app/pages/index.tsx)
+
 
 A **minimal**, opinionated full-stack React framework on Node.js that server-renders everything and hydrates only interactive parts.
 
