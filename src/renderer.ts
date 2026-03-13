@@ -41,6 +41,73 @@ export interface RenderContext {
   skipClientSSR?: boolean;
 }
 
+// ─── Wrapper attribute helpers ────────────────────────────────────────────────
+
+/**
+ * Attributes that belong on the hydration <span> wrapper rather than being
+ * forwarded to the inner client component.  Includes className, style, id,
+ * and any data-* / aria-* attributes.
+ */
+function isWrapperAttr(key: string): boolean {
+  return (
+    key === 'className' ||
+    key === 'style'     ||
+    key === 'id'        ||
+    key.startsWith('data-') ||
+    key.startsWith('aria-')
+  );
+}
+
+/**
+ * Splits props into two bags:
+ *   wrapperAttrs   — keys destined for the <span> (className, style, id, data-*, aria-*)
+ *   componentProps — everything else, forwarded to the actual component
+ */
+function splitWrapperAttrs(props: any): {
+  wrapperAttrs:   Record<string, any>;
+  componentProps: Record<string, any>;
+} {
+  const wrapperAttrs:   Record<string, any> = {};
+  const componentProps: Record<string, any> = {};
+  for (const [key, value] of Object.entries((props || {}) as Record<string, any>)) {
+    if (isWrapperAttr(key)) wrapperAttrs[key]   = value;
+    else                    componentProps[key] = value;
+  }
+  return { wrapperAttrs, componentProps };
+}
+
+/**
+ * Converts a wrapper-attrs bag into an HTML attribute string (leading space
+ * included when non-empty) suitable for direct interpolation into a tag.
+ *
+ *   className → class
+ *   style obj → "prop:value;…" CSS string
+ */
+function buildWrapperAttrString(attrs: Record<string, any>): string {
+  const parts = Object.entries(attrs)
+    .map(([key, value]) => {
+      if (key === 'className') key = 'class';
+
+      if (key === 'style' && typeof value === 'object') {
+        const css = Object.entries(value as Record<string, any>)
+          .map(([k, v]) => {
+            const prop    = k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
+            const safeVal = String(v).replace(/[<>"'`\\]/g, '');
+            return `${prop}:${safeVal}`;
+          })
+          .join(';');
+        return `style="${css}"`;
+      }
+
+      if (typeof value === 'boolean') return value ? key : '';
+      if (value == null) return '';
+      return `${key}="${escapeHtml(String(value))}"`;
+    })
+    .filter(Boolean);
+
+  return parts.length ? ' ' + parts.join(' ') : '';
+}
+
 // ─── Top-level renderer ───────────────────────────────────────────────────────
 
 /**
@@ -180,16 +247,20 @@ async function renderFunctionComponent(
     // This is a client boundary.
     try {
       ctx.hydrated.add(id);
-      const serializedProps = serializePropsForHydration(props, ctx.registry);
+
+      // Split props: wrapper attrs go on the <span>, the rest reach the component.
+      const { wrapperAttrs, componentProps } = splitWrapperAttrs(props);
+      const wrapperAttrStr  = buildWrapperAttrString(wrapperAttrs);
+      const serializedProps = serializePropsForHydration(componentProps, ctx.registry);
       log.verbose(`Client component rendered for hydration: ${id} (${path.basename(filePath)})`);
 
       // Optionally SSR the component so the initial HTML is meaningful
       // (improves perceived performance and avoids layout shift).
       const html = ctx.skipClientSSR
         ? ''
-        : renderToString(createElement(type as React.ComponentType<any>, props));
+        : renderToString(createElement(type as React.ComponentType<any>, componentProps));
 
-      return `<span data-hydrate-id="${id}" data-hydrate-props="${escapeHtml(
+      return `<span data-hydrate-id="${id}"${wrapperAttrStr} data-hydrate-props="${escapeHtml(
         JSON.stringify(serializedProps),
       )}">${html}</span>`;
     } catch (err) {

@@ -536,6 +536,43 @@ const VOID_TAGS = new Set([
   'link','meta','param','source','track','wbr',
 ]);
 
+// ─── Wrapper attribute helpers ────────────────────────────────────────────────
+function isWrapperAttr(key: string): boolean {
+  return (
+    key === 'className' ||
+    key === 'style'     ||
+    key === 'id'        ||
+    key.startsWith('data-') ||
+    key.startsWith('aria-')
+  );
+}
+function splitWrapperAttrs(props: any): { wrapperAttrs: Record<string, any>; componentProps: Record<string, any> } {
+  const wrapperAttrs: Record<string, any>   = {};
+  const componentProps: Record<string, any> = {};
+  for (const [key, value] of Object.entries((props || {}) as Record<string, any>)) {
+    if (isWrapperAttr(key)) wrapperAttrs[key]   = value;
+    else                    componentProps[key] = value;
+  }
+  return { wrapperAttrs, componentProps };
+}
+function buildWrapperAttrString(attrs: Record<string, any>): string {
+  const parts = Object.entries(attrs)
+    .map(([key, value]) => {
+      if (key === 'className') key = 'class';
+      if (key === 'style' && typeof value === 'object') {
+        const css = Object.entries(value as Record<string, any>)
+          .map(([p, val]) => \`\${p.replace(/[A-Z]/g, m => \`-\${m.toLowerCase()}\`)}:\${escapeHtml(String(val))}\`)
+          .join(';');
+        return \`style="\${css}"\`;
+      }
+      if (typeof value === 'boolean') return value ? key : '';
+      if (value == null) return '';
+      return \`\${key}="\${escapeHtml(String(value))}"\`;
+    })
+    .filter(Boolean);
+  return parts.length ? ' ' + parts.join(' ') : '';
+}
+
 function serializeProps(value: any): any {
   if (value == null || typeof value !== 'object') return value;
   if (typeof value === 'function') return undefined;
@@ -596,14 +633,16 @@ async function renderNode(node: any, hydrated: Set<string>): Promise<string> {
     const clientId = CLIENT_COMPONENTS[type.name];
     if (clientId) {
       hydrated.add(clientId);
-      const serializedProps = serializeProps(props ?? {});
+      const { wrapperAttrs, componentProps } = splitWrapperAttrs(props);
+      const wrapperAttrStr  = buildWrapperAttrString(wrapperAttrs);
+      const serializedProps = serializeProps(componentProps ?? {});
       let ssrHtml: string;
       try {
-        ssrHtml = __renderToString__(__createElement__(type as any, props || {}));
+        ssrHtml = __renderToString__(__createElement__(type as any, componentProps || {}));
       } catch {
         ssrHtml = PRERENDERED_HTML[clientId] ?? '';
       }
-      return \`<span data-hydrate-id="\${clientId}" data-hydrate-props="\${escapeHtml(JSON.stringify(serializedProps))}">\${ssrHtml}</span>\`;
+      return \`<span data-hydrate-id="\${clientId}"\${wrapperAttrStr} data-hydrate-props="\${escapeHtml(JSON.stringify(serializedProps))}">\${ssrHtml}</span>\`;
     }
     const instance = type.prototype?.isReactComponent ? new (type as any)(props) : null;
     return renderNode(instance ? instance.render() : await (type as Function)(props || {}), hydrated);
