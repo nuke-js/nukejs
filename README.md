@@ -23,6 +23,7 @@ npm create nuke@latest
 - [useHtml() — Head Management](#usehtml--head-management)
 - [Configuration](#configuration)
 - [Link Component & Navigation](#link-component--navigation)
+- [useRequest() — URL Params, Query & Headers](#userequest--url-params-query--headers)
 - [Building & Deploying](#building--deploying)
 
 ## Overview
@@ -81,7 +82,7 @@ export default function LikeButton({ postId }: { postId: string }) {
 ### Installation
 
 ```bash
-npm create nuke
+npm create nuke@latest
 ```
 
 ### Running the dev server
@@ -576,6 +577,140 @@ export default function SearchForm() {
   );
 }
 ```
+
+---
+
+## useRequest() — URL Params, Query & Headers
+
+`useRequest()` is a universal hook that exposes the current request's URL parameters, query string, and headers to any component — **server or client, dev or production**.
+
+```tsx
+import { useRequest } from 'nukejs';
+
+const { params, query, headers, pathname, url } = useRequest();
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `url` | `string` | Full URL with query string, e.g. `/blog/hello?lang=en` |
+| `pathname` | `string` | Path only, e.g. `/blog/hello` |
+| `params` | `Record<string, string \| string[]>` | Dynamic route segments |
+| `query` | `Record<string, string \| string[]>` | Query-string params (multi-value keys become arrays) |
+| `headers` | `Record<string, string>` | Request headers |
+
+### Where data comes from
+
+| Environment | Source |
+|---|---|
+| Server (SSR) | Live `IncomingMessage` — all headers including `cookie` |
+| Client (browser) | `__n_data` blob embedded in the page + `window.location` (reactive) |
+
+On the client the hook is **reactive**: it re-reads on every SPA navigation so `query`, `pathname`, and `params` stay current without a page reload.
+
+> **Security:** `headers` on the client never contains `cookie`, `authorization`, `proxy-authorization`, `set-cookie`, or `x-api-key`. These are stripped before embedding in the HTML document so credentials cannot leak into cached or logged pages.
+
+### Reading route params and query string
+
+```tsx
+// app/pages/blog/[slug].tsx
+// URL: /blog/hello-world?tab=comments
+import { useRequest } from 'nukejs';
+
+export default function BlogPost() {
+  const { params, query } = useRequest();
+  const slug = params.slug as string;
+  const tab  = (query.tab as string) ?? 'overview';
+
+  return (
+    <article>
+      <h1>{slug}</h1>
+      <p>Active tab: {tab}</p>
+    </article>
+  );
+}
+```
+
+### Catch-all routes
+
+```tsx
+// app/pages/docs/[...path].tsx
+// URL: /docs/api/hooks → path = ['api', 'hooks']
+import { useRequest } from 'nukejs';
+
+export default function Docs() {
+  const { params } = useRequest();
+  const segments = params.path as string[];
+
+  return <nav>{segments.join(' › ')}</nav>;
+}
+```
+
+### Reading headers in a server component
+
+```tsx
+// app/pages/dashboard.tsx
+import { useRequest } from 'nukejs';
+
+export default async function Dashboard() {
+  const { headers } = useRequest();
+
+  // Forward the session cookie to an internal API call
+  const data = await fetch('http://localhost:3000/api/me', {
+    headers: { cookie: headers['cookie'] ?? '' },
+  }).then(r => r.json());
+
+  return <main>{data.name}</main>;
+}
+```
+
+### Building `useI18n` on top
+
+`useRequest` is designed as a primitive for higher-level hooks. Here is a complete `useI18n` implementation that works in both server and client components:
+
+```tsx
+// app/hooks/useI18n.ts
+import { useRequest } from 'nukejs';
+
+const translations = {
+  en: { welcome: 'Welcome', signIn: 'Sign in' },
+  fr: { welcome: 'Bienvenue', signIn: 'Se connecter' },
+  de: { welcome: 'Willkommen', signIn: 'Anmelden' },
+} as const;
+type Locale = keyof typeof translations;
+
+function detectLocale(
+  query: Record<string, string | string[]>,
+  acceptLanguage = '',
+): Locale {
+  // ?lang=fr in the URL takes priority over the browser header
+  const fromQuery = query.lang as string | undefined;
+  if (fromQuery && fromQuery in translations) return fromQuery as Locale;
+
+  const fromHeader = acceptLanguage
+    .split(',')[0]?.split('-')[0]?.trim().toLowerCase();
+  if (fromHeader && fromHeader in translations) return fromHeader as Locale;
+
+  return 'en';
+}
+
+export function useI18n() {
+  const { query, headers } = useRequest();
+  const locale = detectLocale(query, headers['accept-language']);
+  return { t: translations[locale], locale };
+}
+```
+
+```tsx
+// app/pages/index.tsx
+import { useI18n } from '../hooks/useI18n';
+
+export default function Home() {
+  const { t } = useI18n();
+  return <h1>{t.welcome}</h1>;
+}
+```
+
+Changing `?lang=fr` in the URL re-renders client components automatically.
 
 ---
 
