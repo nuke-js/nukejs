@@ -489,6 +489,26 @@ function resolveTitle(ops: TitleValue[], fallback = ''): string {
   return t;
 }
 
+// ─── request-store (inlined) ──────────────────────────────────────────────────
+const SENSITIVE_HEADERS = new Set([
+  'cookie','authorization','proxy-authorization','set-cookie','x-api-key',
+]);
+function sanitiseHeaders(raw: Record<string, string | string[] | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (SENSITIVE_HEADERS.has(k.toLowerCase()) || v === undefined) continue;
+    out[k] = Array.isArray(v) ? v.join(', ') : v;
+  }
+  return out;
+}
+const __REQ_KEY__ = Symbol.for('__nukejs_request_store__');
+const __getReq = () => (globalThis as any)[__REQ_KEY__] ?? null;
+const __setReq = (v: any) => { (globalThis as any)[__REQ_KEY__] = v; };
+async function runWithRequestStore<T>(ctx: any, fn: () => Promise<T>): Promise<T> {
+  __setReq(ctx);
+  try { return await fn(); } finally { __setReq(null); }
+}
+
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 function escapeHtml(s: string): string {
   return String(s)
@@ -672,12 +692,28 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         : parsed.searchParams.get(k) as string;
     });
     const url = req.url || '/';
+    const pathname = parsed.pathname;
+
+    // Build query map (excludes dynamic route segments already in params).
+    const query: Record<string, string | string[]> = {};
+    parsed.searchParams.forEach((_, k) => {
+      if (!(k in params)) {
+        const all = parsed.searchParams.getAll(k);
+        query[k] = all.length > 1 ? all : all[0];
+      }
+    });
+
+    // Sanitise headers — strips cookie, authorization, proxy-authorization.
+    const safeHeaders = sanitiseHeaders(req.headers as Record<string, string | string[] | undefined>);
 
     const hydrated = new Set<string>();
     const wrapped  = wrapWithLayouts({ type: __page__.default, props: params as any, key: null, ref: null });
 
     let appHtml = '';
-    const store = await runWithHtmlStore(async () => { appHtml = await renderNode(wrapped, hydrated); });
+    const store = await runWithRequestStore(
+      { url, pathname, params, query, headers: req.headers },
+      () => runWithHtmlStore(async () => { appHtml = await renderNode(wrapped, hydrated); }),
+    );
 
     const pageTitle = resolveTitle(store.titleOps, 'NukeJS');
     const headScripts = store.script.filter((s: any) => (s.position ?? 'head') === 'head');
@@ -701,7 +737,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const bodyScriptsHtml = bodyScriptLines.length ? '\\n' + bodyScriptLines.join('\\n') + '\\n' : '';
 
     const runtimeData = JSON.stringify({
-      hydrateIds: [...hydrated], allIds: ALL_CLIENT_IDS, url, params, debug: 'silent',
+      hydrateIds: [...hydrated], allIds: ALL_CLIENT_IDS, url, params,
+      query, headers: safeHeaders, debug: 'silent',
     }).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
 
     const html = \`<!DOCTYPE html>

@@ -149,7 +149,7 @@ const server = http.createServer(async (req, res) => {
 
     // ── Page SSR ────────────────────────────────────────────────────────────
     // Nothing above matched — render a page from app/pages.
-    return await serverSideRender(url, res, PAGES_DIR, isDev);
+    return await serverSideRender(url, res, PAGES_DIR, isDev, req);
 
   } catch (error) {
     log.error('Server error:', error);

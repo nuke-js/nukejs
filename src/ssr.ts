@@ -43,6 +43,8 @@ import { log, getDebugLevel, type DebugLevel } from './logger';
 import { matchRoute, findLayoutsForRoute } from './router';
 import { findClientComponentsInTree } from './component-analyzer';
 import { renderElementToHtml, type RenderContext } from './renderer';
+import { runWithRequestStore, sanitiseHeaders } from './request-store';
+import type { IncomingMessage } from 'http';
 import {
   runWithHtmlStore,
   resolveTitle,
@@ -198,7 +200,8 @@ export async function serverSideRender(
   url:      string,
   res:      ServerResponse,
   pagesDir: string,
-  isDev = false,
+  isDev   = false,
+  req?:     IncomingMessage,
 ): Promise<void> {
   const skipClientSSR = url.includes('__hmr=1');
   const cleanUrl      = url.split('?')[0];
@@ -227,6 +230,11 @@ export async function serverSideRender(
     }
   });
   const mergedParams = { ...queryParams, ...params };
+
+  // Build safe headers map for the request store and __n_data blob.
+  // sanitiseHeaders strips sensitive headers (cookie, authorization, etc.).
+  const rawHeaders  = req?.headers ?? {};
+  const safeHeaders = sanitiseHeaders(rawHeaders as Record<string, string | string[] | undefined>);
 
   // ── Module import ───────────────────────────────────────────────────────────
   // tsImport bypasses Node's ESM module cache entirely so edits are reflected
@@ -259,9 +267,20 @@ export async function serverSideRender(
   const ctx: RenderContext = { registry, hydrated: new Set(), skipClientSSR };
 
   let appHtml = '';
-  const store: HtmlStore = await runWithHtmlStore(async () => {
-    appHtml = await renderElementToHtml(wrappedElement, ctx);
-  });
+  // runWithRequestStore makes { params, query, headers } available to any server
+  // component that calls useRequest() during this render.
+  const store: HtmlStore = await runWithRequestStore(
+    {
+      url:      url,
+      pathname: cleanUrl,
+      params,
+      query:    queryParams,
+      headers:  rawHeaders as Record<string, string>,
+    },
+    () => runWithHtmlStore(async () => {
+      appHtml = await renderElementToHtml(wrappedElement, ctx);
+    }),
+  );
 
   // ── Head assembly ───────────────────────────────────────────────────────────
   const pageTitle = resolveTitle(store.titleOps, 'NukeJS');
@@ -275,11 +294,15 @@ export async function serverSideRender(
 
   // ── Runtime data blob ───────────────────────────────────────────────────────
   // Escape </script> sequences so the JSON cannot break out of the script tag.
+  // `query` and `headers` (sanitised) are included so useRequest() can read
+  // them from the client without an extra network round-trip.
   const runtimeData = JSON.stringify({
     hydrateIds: [...ctx.hydrated],
     allIds:     [...registry.keys()],
     url,
     params,
+    query:   queryParams,
+    headers: safeHeaders,
     debug: toClientDebugLevel(getDebugLevel()),
   })
     .replace(/</g, '\\u003c')

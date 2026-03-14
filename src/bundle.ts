@@ -536,6 +536,13 @@ export interface RuntimeData {
   allIds:  string[];
   url:     string;
   params:  Record<string, any>;
+  /** Query string parameters parsed from the URL. Multi-value keys are arrays. */
+  query:   Record<string, string | string[]>;
+  /**
+   * Safe subset of the incoming request headers (cookie, authorization, and
+   * proxy-authorization are stripped before embedding in the HTML document).
+   */
+  headers: Record<string, string>;
   debug:   ClientDebugLevel;
 }
 
