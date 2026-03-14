@@ -42,6 +42,13 @@ const OUTPUT_DIR    = path.resolve('.vercel/output');
 const FUNCTIONS_DIR = path.join(OUTPUT_DIR, 'functions');
 const STATIC_DIR    = path.join(OUTPUT_DIR, 'static');
 
+// Clean the entire .vercel/output/ folder before building so stale function
+// bundles, removed routes, and renamed pages don't linger in the output.
+if (fs.existsSync(OUTPUT_DIR)) {
+  fs.rmSync(OUTPUT_DIR, { recursive: true, force: true });
+  console.log('🗑️  Cleaned .vercel/output/');
+}
+
 for (const dir of [FUNCTIONS_DIR, STATIC_DIR])
   fs.mkdirSync(dir, { recursive: true });
 

@@ -34,6 +34,13 @@ const API_DIR    = path.join(OUT_DIR, 'api');
 const PAGES_DIR_ = path.join(OUT_DIR, 'pages');
 const STATIC_DIR = path.join(OUT_DIR, 'static');
 
+// Clean the entire dist/ folder before building so stale bundles, removed
+// routes, and renamed pages don't linger in the output.
+if (fs.existsSync(OUT_DIR)) {
+  fs.rmSync(OUT_DIR, { recursive: true, force: true });
+  console.log('🗑️  Cleaned dist/');
+}
+
 for (const dir of [API_DIR, PAGES_DIR_, STATIC_DIR])
   fs.mkdirSync(dir, { recursive: true });
 
