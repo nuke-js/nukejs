@@ -16,24 +16,25 @@
 
 import { pathToFileURL } from 'url';
 import { escapeHtml } from './utils';
+// ScriptTag is fully compatible with html-store's definition.
+import type { ScriptTag } from './html-store';
+export type { ScriptTag };
 
-export interface ScriptTag {
-  src?:     string;
-  content?: string;
-  type?:    string;
-  defer?:   boolean;
-  async?:   boolean;
-}
-
+/**
+ * StyleTag for the legacy metadata API.
+ * Extends html-store's StyleTag with `href` for external stylesheet links,
+ * which the metadata API supported but html-store's <style>-only type does not.
+ */
 export interface StyleTag {
-  href?:    string;
+  href?: string;
   content?: string;
+  media?: string;
 }
 
 export interface Metadata {
-  title?:   string;
+  title?: string;
   scripts?: ScriptTag[];
-  styles?:  StyleTag[];
+  styles?: StyleTag[];
 }
 
 /**
@@ -61,9 +62,9 @@ export async function loadMetadata(filePath: string): Promise<Metadata> {
 export function mergeMetadata(ordered: Metadata[]): Required<Metadata> {
   const result: Required<Metadata> = { title: '', scripts: [], styles: [] };
   for (const m of ordered) {
-    if (m.title)          result.title = m.title;
+    if (m.title) result.title = m.title;
     if (m.scripts?.length) result.scripts.push(...m.scripts);
-    if (m.styles?.length)  result.styles.push(...m.styles);
+    if (m.styles?.length) result.styles.push(...m.styles);
   }
   return result;
 }
@@ -73,9 +74,9 @@ export function renderScriptTag(s: ScriptTag): string {
   if (s.src) {
     const attrs = [
       `src="${escapeHtml(s.src)}"`,
-      s.type  ? `type="${escapeHtml(s.type)}"` : '',
-      s.defer ? 'defer'  : '',
-      s.async ? 'async'  : '',
+      s.type ? `type="${escapeHtml(s.type)}"` : '',
+      s.defer ? 'defer' : '',
+      s.async ? 'async' : '',
     ].filter(Boolean).join(' ');
     return `<script ${attrs}></script>`;
   }

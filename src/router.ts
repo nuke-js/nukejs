@@ -9,10 +9,12 @@
  *   server/files/[[...path]].ts    → /files or /files/* (optional catch-all)
  *
  * Route specificity (higher = wins over lower):
- *   static segment     +4   (e.g. 'about')
- *   dynamic segment    +3   (e.g. '[id]')
- *   catch-all          +2   (e.g. '[...slug]')
+ *   static segment     +5   (e.g. 'about')
+ *   dynamic single     +4   (e.g. '[id]')
+ *   optional single    +3   (e.g. '[[id]]')
+ *   required catch-all +2   (e.g. '[...slug]')
  *   optional catch-all +1   (e.g. '[[...path]]')
+ *   (scores match getRouteSpecificity in this file)
  *
  * Path traversal protection:
  *   matchRoute() rejects URL segments that contain '..' or '.' and verifies
@@ -134,8 +136,9 @@ export function matchDynamicRoute(
  * Used to sort candidate routes so more specific routes shadow catch-alls.
  *
  * Higher score = more specific:
- *   static segment      4
- *   [dynamic]           3
+ *   static segment      5
+ *   [dynamic]           4
+ *   [[optSingle]]       3
  *   [...catchAll]       2
  *   [[...optCatchAll]]  1
  */

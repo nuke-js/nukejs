@@ -127,7 +127,7 @@ function patternMatchesPathname(pattern: string, pathname: string): boolean {
  * (meaning it's back up), then triggers a full page reload to pick up any
  * changes that happened during the downtime.
  *
- * Gives up after `maxAttempts` (default ~15 seconds at 500 ms intervals).
+ * Gives up after `maxAttempts` (default ~30 seconds at 3000 ms intervals).
  */
 function waitForReconnect(intervalMs = 3000, maxAttempts = 10): void {
   let attempts = 0;

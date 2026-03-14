@@ -73,11 +73,11 @@ export type { RequestContext };
 
 /** Fallback context used when data is unavailable. */
 const EMPTY_CTX: RequestContext = {
-  url: '',
+  url:      '',
   pathname: '',
-  params: {},
-  query: {},
-  headers: {},
+  params:   {},
+  query:    {},
+  headers:  {},
 };
 
 /**
@@ -90,8 +90,8 @@ const EMPTY_CTX: RequestContext = {
 function readClientContext(): RequestContext {
   try {
     // __n_data is a JSON blob with { url, params, query, headers, … }.
-    const raw = document.getElementById('__n_data')?.textContent ?? '{}';
-    const data = JSON.parse(raw) as Partial<RequestContext & { params: Record<string, any> }>;
+    const raw   = document.getElementById('__n_data')?.textContent ?? '{}';
+    const data  = JSON.parse(raw) as Partial<RequestContext & { params: Record<string, any> }>;
 
     // Always re-parse the query string from the live URL so navigation
     // to ?lang=fr is reflected immediately without waiting for a new SSR.
@@ -106,11 +106,11 @@ function readClientContext(): RequestContext {
     }
 
     return {
-      url: window.location.pathname + window.location.search,
+      url:      window.location.pathname + window.location.search,
       pathname: window.location.pathname,
-      params: data.params ?? {},
+      params:   data.params  ?? {},
       query,
-      headers: data.headers ?? {},
+      headers:  data.headers ?? {},
     };
   } catch {
     return EMPTY_CTX;

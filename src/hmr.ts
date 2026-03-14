@@ -77,7 +77,8 @@ function broadcastHmr(payload: object): void {
  *   'pages/blog/[slug].tsx'   → '/blog/[slug]'  (dynamic segment preserved)
  */
 function pageFileToUrl(filename: string): string {
-  // Strip the leading 'pages/' prefix that watchDir was called with.
+  // watchDir is called with ./app, so filenames are relative to that dir,
+  // e.g. 'pages/about/index.tsx'.  Strip the 'pages/' prefix to get the URL path.
   const withoutPages = filename.slice('pages/'.length);
   const withoutExt   = withoutPages.replace(/\.(tsx|ts)$/, '');
 

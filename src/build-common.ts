@@ -350,6 +350,7 @@ export async function buildPages(
       allClientIds:         [...registry.keys()],
       layoutPaths,
       prerenderedHtml:      prerenderedRecord,
+      routeParamNames:      page.paramNames,
       catchAllNames:        page.catchAllNames,
     });
 
@@ -400,8 +401,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   const apiReq = req as any;
 
   apiReq.body   = await parseBody(req);
-  apiReq.query  = Object.fromEntries(new URL(req.url || '/', 'http://localhost').searchParams);
-  apiReq.params = apiReq.query;
+  // In production, route dynamic segments are injected as query-string keys by
+  // the server entry, so params and query share the same parsed URL values.
+  const qs = Object.fromEntries(new URL(req.url || '/', 'http://localhost').searchParams);
+  apiReq.query  = qs;
+  apiReq.params = qs;
 
   const fn = (mod as any)[method] ?? (mod as any).default;
   if (typeof fn !== 'function') {
@@ -428,7 +432,12 @@ export interface PageAdapterOptions {
   layoutArrayItems: string;
   /** Pre-rendered HTML per client component ID, computed at build time */
   prerenderedHtml: Record<string, string>;
-  /** Catch-all param names whose runtime values are string[] not string */
+  /**
+   * All dynamic route param names for this page (e.g. ['id', 'slug']).
+   * Used to distinguish route segments from real query-string params at runtime.
+   */
+  routeParamNames: string[];
+  /** Subset of routeParamNames whose values are string[] (catch-all segments) */
   catchAllNames: string[];
 }
 
@@ -445,7 +454,7 @@ export interface PageAdapterOptions {
 export function makePageAdapterSource(opts: PageAdapterOptions): string {
   const {
     pageImport, layoutImports, clientComponentNames, allClientIds,
-    layoutArrayItems, prerenderedHtml, catchAllNames,
+    layoutArrayItems, prerenderedHtml, routeParamNames, catchAllNames,
   } = opts;
 
   return `\
@@ -458,7 +467,10 @@ ${layoutImports}
 const CLIENT_COMPONENTS: Record<string, string> = ${JSON.stringify(clientComponentNames)};
 const ALL_CLIENT_IDS: string[] = ${JSON.stringify(allClientIds)};
 const PRERENDERED_HTML: Record<string, string> = ${JSON.stringify(prerenderedHtml)};
-const CATCH_ALL_NAMES = new Set(${JSON.stringify(catchAllNames)});
+// ROUTE_PARAM_NAMES: the dynamic segments baked into this page's URL pattern.
+// Used to separate them from real user-supplied query params at runtime.
+const ROUTE_PARAM_NAMES = new Set<string>(${JSON.stringify(routeParamNames)});
+const CATCH_ALL_NAMES   = new Set<string>(${JSON.stringify(catchAllNames)});
 
 // ─── html-store (inlined) ─────────────────────────────────────────────────────
 type TitleValue = string | ((prev: string) => string);
@@ -493,6 +505,16 @@ function resolveTitle(ops: TitleValue[], fallback = ''): string {
 const SENSITIVE_HEADERS = new Set([
   'cookie','authorization','proxy-authorization','set-cookie','x-api-key',
 ]);
+// Flattens multi-value headers to strings; keeps all headers including credentials.
+function normaliseHeaders(raw: Record<string, string | string[] | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (v === undefined) continue;
+    out[k] = Array.isArray(v) ? v.join(', ') : v;
+  }
+  return out;
+}
+// Same as normaliseHeaders but strips credentials before embedding in HTML.
 function sanitiseHeaders(raw: Record<string, string | string[] | undefined>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(raw)) {
@@ -594,8 +616,8 @@ function buildWrapperAttrString(attrs: Record<string, any>): string {
 }
 
 function serializeProps(value: any): any {
+  if (typeof value === 'function') return undefined;   // must come before the object check
   if (value == null || typeof value !== 'object') return value;
-  if (typeof value === 'function') return undefined;
   if (Array.isArray(value)) return value.map(serializeProps).filter((v: any) => v !== undefined);
   if ((value as any).$$typeof) {
     const { type, props: p } = value as any;
@@ -685,33 +707,43 @@ function wrapWithLayouts(element: any): any {
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const parsed = new URL(req.url || '/', 'http://localhost');
-    const params: Record<string, string | string[]> = {};
-    parsed.searchParams.forEach((_, k) => {
-      params[k] = CATCH_ALL_NAMES.has(k)
-        ? parsed.searchParams.getAll(k)
-        : parsed.searchParams.get(k) as string;
-    });
-    const url = req.url || '/';
+    const url      = req.url || '/';
     const pathname = parsed.pathname;
 
-    // Build query map (excludes dynamic route segments already in params).
+    // Route params are injected as query-string keys by the server entry.
+    // Build 'params' only from known route segments, and 'query' from the rest.
+    const params: Record<string, string | string[]> = {};
+    ROUTE_PARAM_NAMES.forEach(k => {
+      if (CATCH_ALL_NAMES.has(k)) {
+        params[k] = parsed.searchParams.getAll(k);
+      } else {
+        const v = parsed.searchParams.get(k);
+        if (v !== null) params[k] = v;
+      }
+    });
+
     const query: Record<string, string | string[]> = {};
     parsed.searchParams.forEach((_, k) => {
-      if (!(k in params)) {
+      if (!ROUTE_PARAM_NAMES.has(k)) {
         const all = parsed.searchParams.getAll(k);
         query[k] = all.length > 1 ? all : all[0];
       }
     });
 
-    // Sanitise headers — strips cookie, authorization, proxy-authorization.
-    const safeHeaders = sanitiseHeaders(req.headers as Record<string, string | string[] | undefined>);
+    const rawHeaders  = req.headers as Record<string, string | string[] | undefined>;
+    // Full headers (including credentials) for server components via the request store.
+    const normHeaders = normaliseHeaders(rawHeaders);
+    // Stripped headers safe for embedding in the HTML document.
+    const safeHeaders = sanitiseHeaders(rawHeaders);
 
     const hydrated = new Set<string>();
-    const wrapped  = wrapWithLayouts({ type: __page__.default, props: params as any, key: null, ref: null });
+    // Merge query params into page props to match dev behaviour (ssr.ts mergedParams).
+    const merged = { ...query, ...params } as any;
+    const wrapped  = wrapWithLayouts({ type: __page__.default, props: merged, key: null, ref: null });
 
     let appHtml = '';
     const store = await runWithRequestStore(
-      { url, pathname, params, query, headers: req.headers },
+      { url, pathname, params, query, headers: normHeaders },
       () => runWithHtmlStore(async () => { appHtml = await renderNode(wrapped, hydrated); }),
     );
 
@@ -820,6 +852,7 @@ export interface PageBundleOptions {
   allClientIds:         string[];
   layoutPaths:          string[];
   prerenderedHtml:      Record<string, string>;
+  routeParamNames:      string[];
   catchAllNames:        string[];
 }
 
@@ -831,7 +864,7 @@ export interface PageBundleOptions {
 export async function bundlePageHandler(opts: PageBundleOptions): Promise<string> {
   const {
     absPath, clientComponentNames, allClientIds,
-    layoutPaths, prerenderedHtml, catchAllNames,
+    layoutPaths, prerenderedHtml, routeParamNames, catchAllNames,
   } = opts;
 
   const adapterDir  = path.dirname(absPath);
@@ -851,6 +884,7 @@ export async function bundlePageHandler(opts: PageBundleOptions): Promise<string
     allClientIds,
     layoutArrayItems:     layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
     prerenderedHtml,
+    routeParamNames,
     catchAllNames,
   }));
 

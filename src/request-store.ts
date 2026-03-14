@@ -70,9 +70,28 @@ const SENSITIVE_HEADERS = new Set([
 ]);
 
 /**
- * Converts raw Node `IncomingMessage.headers` into a flat string map suitable
- * for embedding in __n_data.  Array values (multi-value headers) are joined
- * with a comma and space.  Sensitive headers are excluded.
+ * Normalises raw Node `IncomingMessage.headers` into a flat `Record<string,string>`.
+ * Array values (multi-value headers) are joined with `', '`.
+ * Undefined values are dropped.
+ *
+ * Used server-side so all headers — including cookies and auth tokens — are
+ * available to server components that need them.
+ */
+export function normaliseHeaders(
+  raw: Record<string, string | string[] | undefined>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (v === undefined) continue;
+    out[k] = Array.isArray(v) ? v.join(', ') : v;
+  }
+  return out;
+}
+
+/**
+ * Same as `normaliseHeaders` but additionally strips headers that must never
+ * appear in a serialised HTML document.  Used when embedding headers in the
+ * `__n_data` blob so credentials cannot leak into cached or logged HTML pages.
  */
 export function sanitiseHeaders(
   raw: Record<string, string | string[] | undefined>,

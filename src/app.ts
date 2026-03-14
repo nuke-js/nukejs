@@ -67,7 +67,6 @@ if (isDev) watchDir(path.resolve('./app'), 'App');
 const apiPrefixes    = discoverApiPrefixes(SERVER_DIR);
 const handleApiRoute = createApiHandler({ apiPrefixes, port: PORT, isDev });
 
-
 log.info(`API prefixes discovered: ${apiPrefixes.length === 0 ? 'none' : ''}`);
 apiPrefixes.forEach(p => {
   log.info(`  - ${p.prefix || '/'} -> ${path.relative(process.cwd(), p.directory)}`);

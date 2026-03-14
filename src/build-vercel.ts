@@ -336,6 +336,7 @@ if (serverPages.length > 0) {
         allClientIds:         [...registry.keys()],
         layoutArrayItems:     layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
         prerenderedHtml:      prerenderedRecord,
+        routeParamNames:      page.paramNames,
         catchAllNames:        page.catchAllNames,
       }),
     );

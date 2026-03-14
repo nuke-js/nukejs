@@ -43,7 +43,7 @@ import { log, getDebugLevel, type DebugLevel } from './logger';
 import { matchRoute, findLayoutsForRoute } from './router';
 import { findClientComponentsInTree } from './component-analyzer';
 import { renderElementToHtml, type RenderContext } from './renderer';
-import { runWithRequestStore, sanitiseHeaders } from './request-store';
+import { runWithRequestStore, normaliseHeaders, sanitiseHeaders } from './request-store';
 import type { IncomingMessage } from 'http';
 import {
   runWithHtmlStore,
@@ -231,10 +231,11 @@ export async function serverSideRender(
   });
   const mergedParams = { ...queryParams, ...params };
 
-  // Build safe headers map for the request store and __n_data blob.
-  // sanitiseHeaders strips sensitive headers (cookie, authorization, etc.).
-  const rawHeaders  = req?.headers ?? {};
-  const safeHeaders = sanitiseHeaders(rawHeaders as Record<string, string | string[] | undefined>);
+  // normaliseHeaders keeps every header (including cookies) for server components.
+  // sanitiseHeaders additionally strips credentials before embedding in HTML.
+  const rawHeaders    = req?.headers ?? {};
+  const normHeaders   = normaliseHeaders(rawHeaders as Record<string, string | string[] | undefined>);
+  const safeHeaders   = sanitiseHeaders(rawHeaders as Record<string, string | string[] | undefined>);
 
   // ── Module import ───────────────────────────────────────────────────────────
   // tsImport bypasses Node's ESM module cache entirely so edits are reflected
@@ -275,7 +276,7 @@ export async function serverSideRender(
       pathname: cleanUrl,
       params,
       query:    queryParams,
-      headers:  rawHeaders as Record<string, string>,
+      headers:  normHeaders,
     },
     () => runWithHtmlStore(async () => {
       appHtml = await renderElementToHtml(wrappedElement, ctx);
