@@ -199,7 +199,31 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 2. Route dispatch — API routes appear before page routes in the manifest
+  // 2. Client-side error — navigate directly to _500 page.
+  {
+    const qs = new URL(url, 'http://localhost').searchParams;
+    if (qs.has('__clientError')) {
+      const e500 = path.join(__dirname, 'pages', '_500.mjs');
+      if (fs.existsSync(e500)) {
+        try {
+          const m500 = await import(pathToFileURL(e500).href);
+          const eq = new URLSearchParams();
+          eq.set('__errorMessage', qs.get('__clientError') || 'Client error');
+          const stack = qs.get('__clientStack');
+          if (stack) eq.set('__errorStack', stack);
+          req.url = '/_500?' + eq.toString();
+          await m500.default(req, res);
+          return;
+        } catch (e) { console.error('[_500 render error]', e); }
+      }
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'text/plain');
+      res.end('Internal Server Error');
+      return;
+    }
+  }
+
+  // 3. Route dispatch — API routes appear before page routes in the manifest
   //    (built in build-node.ts), so they are matched first.
   for (const { regex, paramNames, catchAllNames, handler } of compiled) {
     const m = clean.match(regex);

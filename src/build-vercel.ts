@@ -228,6 +228,17 @@ function makePagesDispatcherSource(
     ? `  try { return await __error_404__(req, res); } catch(e) { console.error('[_404 error]', e); }`
     : `  res.statusCode = 404;\n  res.setHeader('Content-Type', 'text/plain; charset=utf-8');\n  res.end('Not Found');`;
 
+  const clientErrorHandler = errorAdapters.adapter500
+    ? `    try {
+      const eq = new URLSearchParams();
+      eq.set('__errorMessage', url.searchParams.get('__clientError') || 'Client error');
+      const stack = url.searchParams.get('__clientStack');
+      if (stack) eq.set('__errorStack', stack);
+      req.url = '/_500?' + eq.toString();
+      return await __error_500__(req, res);
+    } catch(e) { console.error('[_500 client error]', e); }`
+    : `    res.statusCode = 500;\n    res.setHeader('Content-Type', 'text/plain; charset=utf-8');\n    res.end('Internal Server Error');`;
+
   const errorHandler = errorAdapters.adapter500
     ? `    try {
       const errMsg    = err instanceof Error ? err.message : String(err);
@@ -260,6 +271,11 @@ ${routeEntries}
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   const url      = new URL(req.url || '/', 'http://localhost');
   const pathname = url.pathname;
+
+  // Client-side error — navigate directly to _500 handler.
+  if (url.searchParams.has('__clientError')) {
+${clientErrorHandler}
+  }
 
   for (const route of ROUTES) {
     const m = pathname.match(new RegExp(route.regex));

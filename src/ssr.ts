@@ -398,6 +398,34 @@ export async function serverSideRender(
   const skipClientSSR = url.includes('__hmr=1');
   const cleanUrl      = url.split('?')[0];
 
+  // ── Client-side error ────────────────────────────────────────────────────────
+  // The browser dispatches a locationchange with ?__clientError= when an
+  // unhandled error occurs in a client component or async code.  Map the
+  // params to errorProps and render _500.tsx directly, skipping route matching.
+  const searchParams = new URL(url, 'http://localhost').searchParams;
+  if (searchParams.has('__clientError')) {
+    const errorProps: Record<string, string> = {
+      errorMessage: searchParams.get('__clientError') ?? 'Client error',
+    };
+    const stack = searchParams.get('__clientStack');
+    if (stack) errorProps.errorStack = stack;
+
+    const errorFile = path.join(pagesDir, '_500.tsx');
+    if (fs.existsSync(errorFile)) {
+      try {
+        await renderFile(errorFile, errorProps, url, pagesDir, isDev, res, req, 500, false);
+      } catch (err) {
+        log.error('Error rendering _500.tsx for client error:', err);
+        res.statusCode = 500;
+        res.end('Internal Server Error');
+      }
+    } else {
+      res.statusCode = 500;
+      res.end('Internal Server Error');
+    }
+    return;
+  }
+
   // ── Route resolution ────────────────────────────────────────────────────────
   const routeMatch = matchRoute(cleanUrl, pagesDir);
   if (!routeMatch) {

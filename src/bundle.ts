@@ -196,6 +196,33 @@ async function loadModules(
 type ReactRoot = { unmount(): void };
 const activeRoots: ReactRoot[] = [];
 
+// ─── Client error navigation ──────────────────────────────────────────────────
+
+/**
+ * Navigates to the current page with `__clientError` / `__clientStack` query
+ * params so the server renders `_500.tsx` in-place via SPA navigation.
+ * Debounced — only the first error per page fires; subsequent ones are ignored
+ * while navigation is in flight, and we never navigate if already on an error URL.
+ */
+let clientErrorPending = false;
+
+function navigateToClientError(err: unknown): void {
+  if (clientErrorPending) return;
+  if (window.location.search.includes('__clientError')) return; // already on error page
+
+  clientErrorPending = true;
+  const message = err instanceof Error ? err.message : String(err);
+  const stack   = err instanceof Error && err.stack ? err.stack : undefined;
+
+  const params = new URLSearchParams();
+  params.set('__clientError', message);
+  if (stack) params.set('__clientStack', stack);
+
+  window.dispatchEvent(new CustomEvent('locationchange', {
+    detail: { href: window.location.pathname + '?' + params.toString() },
+  }));
+}
+
 /**
  * Finds every `[data-hydrate-id]` span in the document and calls hydrateRoot()
  * on it.  hydrateRoot reconciles React's virtual DOM against the existing server
@@ -211,6 +238,18 @@ async function mountNodes(
 ): Promise<void> {
   const { hydrateRoot, createRoot } = await import('react-dom/client');
   const React = await import('react');
+
+  // Inline Error Boundary — catches render errors in any hydrated client
+  // component and triggers a soft navigation to the server-rendered _500 page.
+  class NukeErrorBoundary extends React.default.Component<
+    { children: React.ReactNode },
+    { caught: boolean }
+  > {
+    constructor(props: any) { super(props); this.state = { caught: false }; }
+    static getDerivedStateFromError() { return { caught: true }; }
+    componentDidCatch(error: Error) { navigateToClientError(error); }
+    render() { return this.state.caught ? null : (this.props as any).children; }
+  }
 
   const nodes = document.querySelectorAll<HTMLElement>('[data-hydrate-id]');
   log.verbose('Found', nodes.length, 'hydration point(s)');
@@ -231,7 +270,8 @@ async function mountNodes(
     }
 
     try {
-      const element = React.default.createElement(Comp, await reconstructProps(rawProps, mods));
+      const inner   = React.default.createElement(Comp, await reconstructProps(rawProps, mods));
+      const element = React.default.createElement(NukeErrorBoundary, null, inner);
 
       // hydrateRoot reconciles against existing server HTML (initial page load).
       // createRoot renders fresh when the span is empty (HMR path — server sent
@@ -529,6 +569,9 @@ function setupNavigation(log: ReturnType<typeof makeLogger>): void {
     } catch (err) {
       log.error('Navigation error, falling back to full reload:', err);
       window.location.href = href;
+    } finally {
+      // Reset so the next client error can trigger navigation again.
+      clientErrorPending = false;
     }
   });
 }
@@ -581,6 +624,16 @@ export async function initRuntime(data: RuntimeData): Promise<void> {
   // Set up navigation first so any 'locationchange' fired during hydration
   // is captured (e.g. a redirect side-effect inside a component).
   setupNavigation(log);
+
+  // Global error handlers — catch errors outside the React tree (event handlers,
+  // async code, unhandled promise rejections) and navigate to _500 in-place.
+  window.onerror = (_msg, _src, _line, _col, err) => {
+    navigateToClientError(err ?? _msg);
+    return true; // prevent default browser error reporting
+  };
+  window.onunhandledrejection = (e: PromiseRejectionEvent) => {
+    navigateToClientError(e.reason);
+  };
 
   // Load all component bundles (not just hydrateIds) so SPA navigations to
   // related pages can mount their components without an extra network round-trip.
