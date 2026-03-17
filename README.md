@@ -771,12 +771,83 @@ export default function ServerError({ errorMessage, errorStack }: ErrorProps) {
 }
 ```
 
+### Server errors
+
+Any unhandled throw inside a server page component (including async data fetching) routes to `_500.tsx`. The error message and stack trace are forwarded as props automatically.
+
+```tsx
+// app/pages/dashboard.tsx
+export default async function Dashboard() {
+  const data = await fetchData(); // throws → _500.tsx is rendered
+  return <main>{data.name}</main>;
+}
+```
+
+You can also attach a `status` property to a thrown error to control the HTTP status code sent with the response:
+
+```tsx
+export default async function Post({ id }: { id: string }) {
+  const post = await db.getPost(id);
+
+  if (!post) {
+    const err = new Error('Post not found');
+    (err as any).status = 404;
+    throw err; // _500.tsx receives errorMessage="Post not found", errorStatus="404"
+  }
+
+  return <article>{post.title}</article>;
+}
+```
+
+### Client errors
+
+Unhandled errors in client components and async code are automatically caught and routed to `_500.tsx` via an in-place SPA navigation — no full page reload. Three mechanisms cover all cases:
+
+- **React Error Boundary** — wraps every hydrated `"use client"` component; catches render and lifecycle errors
+- **`window.onerror`** — catches synchronous throws in event handlers and other non-React code
+- **`window.onunhandledrejection`** — catches unhandled `Promise` rejections from `async` functions
+
+```tsx
+// app/components/FaultyButton.tsx
+"use client";
+
+export default function FaultyButton() {
+  const handleClick = () => {
+    throw new Error('Something broke!'); // caught by window.onerror → _500.tsx
+  };
+
+  return <button onClick={handleClick}>Click me</button>;
+}
+```
+
+```tsx
+// app/components/FaultyFetch.tsx
+"use client";
+import { useEffect } from 'react';
+
+export default function FaultyFetch() {
+  useEffect(() => {
+    // Unhandled rejection caught by window.onunhandledrejection → _500.tsx
+    fetch('/api/broken').then(res => {
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+    });
+  }, []);
+
+  return <div>Loading...</div>;
+}
+```
+
+The `_500.tsx` page receives `errorMessage` and `errorStack` props from client errors just like server errors, so a single error page handles both origins consistently.
+
 ### Behaviour
 
-| Scenario | Without error page | With error page |
+| Scenario | Without `_500.tsx` | With `_500.tsx` |
 |---|---|---|
+| Server page throws | Plain-text `Internal Server Error` (500) | `_500.tsx` rendered with error props |
+| Client component render error | React crashes the component subtree | `_500.tsx` rendered in-place, no reload |
+| Unhandled event handler throw | Browser console error only | `_500.tsx` rendered in-place, no reload |
+| Unhandled promise rejection | Browser console error only | `_500.tsx` rendered in-place, no reload |
 | Unknown URL | Plain-text `Page not found` (404) | `_404.tsx` rendered with 404 status |
-| Page handler throws | Plain-text `Internal Server Error` (500) | `_500.tsx` rendered with 500 status |
 | `<Link>` to unknown URL | Full page reload | In-place SPA navigation, no reload |
 | HMR save of `_404.tsx` / `_500.tsx` | — | Current page re-fetches immediately |
 
