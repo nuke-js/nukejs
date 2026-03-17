@@ -1,0 +1,21 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "outDir": "./dist",
+        "emitDeclarationOnly": true,
+        "declaration": true,
+        "declarationMap": false,
+        "noEmit": false
+    },
+    "files": [
+        "src/index.ts",
+        "src/use-html.ts",
+        "src/use-router.ts",
+        "src/use-request.ts",
+        "src/request-store.ts",
+        "src/Link.tsx",
+        "src/bundle.ts",
+        "src/utils.ts",
+        "src/logger.ts"
+    ]
+}

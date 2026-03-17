@@ -62,6 +62,48 @@ function processDist(dir: string) {
   console.log('🔧 Post-processing done: relative imports → .js extensions.');
 }
 
+// ─── Declaration pruning ──────────────────────────────────────────────────────
+
+/**
+ * The public API surface: only these stems (relative to src/) get .d.ts files.
+ * All other declarations emitted by tsc (internal / private modules) are deleted.
+ */
+const PUBLIC_STEMS = new Set([
+  'index',
+  'use-html',
+  'use-router',
+  'use-request',
+  'request-store',
+  'Link',
+  'bundle',
+  'utils',
+  'logger',
+]);
+
+/**
+ * Walks dist/ and deletes every .d.ts (and .d.ts.map) whose base stem is not
+ * in PUBLIC_STEMS.  tsc always emits declarations for transitively-imported
+ * modules, so we prune the unwanted ones after the fact.
+ */
+function prunePrivateDeclarations(dir: string): void {
+  (function walk(currentDir: string) {
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.name.endsWith('.d.ts') || entry.name.endsWith('.d.ts.map')) {
+        // Strip all declaration suffixes to get the bare stem
+        const stem = entry.name.replace(/\.d\.ts(\.map)?$/, '');
+        if (!PUBLIC_STEMS.has(stem)) {
+          fs.rmSync(fullPath);
+        }
+      }
+    }
+  })(dir);
+
+  console.log('✂️  Pruned private .d.ts files (kept public API only).');
+}
+
 // ─── Build ────────────────────────────────────────────────────────────────────
 
 async function runBuild(): Promise<void> {
@@ -76,14 +118,15 @@ async function runBuild(): Promise<void> {
       format: 'esm',
       target: ['node20'],
       packages: 'external',
-      sourcemap: true,
     });
     console.log('✅  Build done.');
 
     processDist(outDir);
 
     console.log('📄  Generating TypeScript declarations…');
-    execSync('tsc --emitDeclarationOnly --declaration --outDir dist', { stdio: 'inherit' });
+    execSync('tsc --emitDeclarationOnly --declaration --declarationMap false --outDir dist', { stdio: 'inherit' });
+
+    prunePrivateDeclarations(outDir);
 
     console.log('\n🎉  Build complete → dist/');
   } catch (err) {
