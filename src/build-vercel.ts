@@ -17,10 +17,10 @@
  *     built-ins correctly inside the ESM output bundle.
  */
 
-import fs from 'fs';
+import fs   from 'fs';
 import path from 'path';
 import { randomBytes } from 'node:crypto';
-import { build } from 'esbuild';
+import { build }       from 'esbuild';
 
 import { loadConfig } from './config';
 import {
@@ -38,9 +38,9 @@ import {
 
 // ─── Output directories ───────────────────────────────────────────────────────
 
-const OUTPUT_DIR = path.resolve('.vercel/output');
+const OUTPUT_DIR    = path.resolve('.vercel/output');
 const FUNCTIONS_DIR = path.join(OUTPUT_DIR, 'functions');
-const STATIC_DIR = path.join(OUTPUT_DIR, 'static');
+const STATIC_DIR    = path.join(OUTPUT_DIR, 'static');
 
 // Clean the entire .vercel/output/ folder before building so stale function
 // bundles, removed routes, and renamed pages don't linger in the output.
@@ -54,9 +54,9 @@ for (const dir of [FUNCTIONS_DIR, STATIC_DIR])
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const config = await loadConfig();
+const config     = await loadConfig();
 const SERVER_DIR = path.resolve(config.serverDir);
-const PAGES_DIR = path.resolve('./app/pages');
+const PAGES_DIR  = path.resolve('./app/pages');
 const PUBLIC_DIR = path.resolve('./app/public');
 
 // ─── Shared esbuild config ────────────────────────────────────────────────────
@@ -200,9 +200,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
  */
 function makePagesDispatcherSource(
   routes: Array<{
-    adapterPath: string;
-    srcRegex: string;
-    paramNames: string[];
+    adapterPath:   string;
+    srcRegex:      string;
+    paramNames:    string[];
     catchAllNames: string[];
   }>,
   errorAdapters: { adapter404?: string; adapter500?: string } = {},
@@ -229,7 +229,17 @@ function makePagesDispatcherSource(
     : `  res.statusCode = 404;\n  res.setHeader('Content-Type', 'text/plain; charset=utf-8');\n  res.end('Not Found');`;
 
   const errorHandler = errorAdapters.adapter500
-    ? `    try { return await __error_500__(req, res); } catch(e) { console.error('[_500 error]', e); }`
+    ? `    try {
+      const errMsg    = err instanceof Error ? err.message : String(err);
+      const errStack  = err instanceof Error ? err.stack   : undefined;
+      const errStatus = err?.status ?? err?.statusCode;
+      const eq = new URLSearchParams();
+      eq.set('__errorMessage', errMsg);
+      if (errStack)  eq.set('__errorStack',  errStack);
+      if (errStatus) eq.set('__errorStatus', String(errStatus));
+      req.url = '/_500?' + eq.toString();
+      return await __error_500__(req, res);
+    } catch(e) { console.error('[_500 error]', e); }`
     : `    res.statusCode = 500;\n    res.setHeader('Content-Type', 'text/plain; charset=utf-8');\n    res.end('Internal Server Error');`;
 
   return `\
@@ -298,13 +308,13 @@ if (apiRoutes.length > 0) {
   try {
     const result = await build({
       entryPoints: [dispatcherPath],
-      bundle: true,
-      format: 'esm',
-      platform: 'node',
-      target: 'node20',
-      banner: CJS_COMPAT_BANNER,
-      external: NODE_BUILTINS,
-      write: false,
+      bundle:      true,
+      format:      'esm',
+      platform:    'node',
+      target:      'node20',
+      banner:      CJS_COMPAT_BANNER,
+      external:    NODE_BUILTINS,
+      write:       false,
     });
     emitVercelFunction('api', result.outputFiles[0].text);
     console.log(`  built     API dispatcher → api.func  (${apiRoutes.length} route(s))`);
@@ -326,7 +336,7 @@ const hasErrorPages = ['_404.tsx', '_500.tsx'].some(f => fs.existsSync(path.join
 
 if (serverPages.length > 0 || hasErrorPages) {
   // Pass 1 — bundle all client components to static files.
-  const globalRegistry = collectGlobalClientRegistry(serverPages, PAGES_DIR);
+  const globalRegistry  = collectGlobalClientRegistry(serverPages, PAGES_DIR);
   const prerenderedHtml = await bundleClientComponents(globalRegistry, PAGES_DIR, STATIC_DIR);
   const prerenderedRecord = Object.fromEntries(prerenderedHtml);
 
@@ -336,7 +346,7 @@ if (serverPages.length > 0 || hasErrorPages) {
   const tempAdapterPaths: string[] = [];
 
   for (const page of serverPages) {
-    const adapterDir = path.dirname(page.absPath);
+    const adapterDir  = path.dirname(page.absPath);
     const adapterPath = path.join(adapterDir, `_page_adapter_${randomBytes(4).toString('hex')}.ts`);
 
     const layoutPaths = findPageLayouts(page.absPath, PAGES_DIR);
@@ -352,14 +362,14 @@ if (serverPages.length > 0 || hasErrorPages) {
     fs.writeFileSync(
       adapterPath,
       makePageAdapterSource({
-        pageImport: JSON.stringify('./' + path.basename(page.absPath)),
+        pageImport:           JSON.stringify('./' + path.basename(page.absPath)),
         layoutImports,
         clientComponentNames,
-        allClientIds: [...registry.keys()],
-        layoutArrayItems: layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
-        prerenderedHtml: prerenderedRecord,
-        routeParamNames: page.paramNames,
-        catchAllNames: page.catchAllNames,
+        allClientIds:         [...registry.keys()],
+        layoutArrayItems:     layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
+        prerenderedHtml:      prerenderedRecord,
+        routeParamNames:      page.paramNames,
+        catchAllNames:        page.catchAllNames,
       }),
     );
 
@@ -368,9 +378,9 @@ if (serverPages.length > 0 || hasErrorPages) {
   }
 
   const dispatcherRoutes = serverPages.map((page, i) => ({
-    adapterPath: tempAdapterPaths[i],
-    srcRegex: page.srcRegex,
-    paramNames: page.paramNames,
+    adapterPath:   tempAdapterPaths[i],
+    srcRegex:      page.srcRegex,
+    paramNames:    page.paramNames,
     catchAllNames: page.catchAllNames,
   }));
 
@@ -382,7 +392,7 @@ if (serverPages.length > 0 || hasErrorPages) {
     if (!fs.existsSync(src)) continue;
 
     console.log(`  building  _${statusCode}.tsx  \u2192  pages.func  [error page]`);
-    const adapterDir = path.dirname(src);
+    const adapterDir  = path.dirname(src);
     const adapterPath = path.join(adapterDir, `_error_adapter_${randomBytes(4).toString('hex')}.ts`);
 
     const layoutPaths = findPageLayouts(src, PAGES_DIR);
@@ -395,14 +405,14 @@ if (serverPages.length > 0 || hasErrorPages) {
       .join('\n');
 
     fs.writeFileSync(adapterPath, makePageAdapterSource({
-      pageImport: JSON.stringify('./' + path.basename(src)),
+      pageImport:           JSON.stringify('./' + path.basename(src)),
       layoutImports,
       clientComponentNames,
-      allClientIds: [...registry.keys()],
-      layoutArrayItems: layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
-      prerenderedHtml: prerenderedRecord,
-      routeParamNames: [],
-      catchAllNames: [],
+      allClientIds:         [...registry.keys()],
+      layoutArrayItems:     layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
+      prerenderedHtml:      prerenderedRecord,
+      routeParamNames:      [],
+      catchAllNames:        [],
       statusCode,
     }));
 
@@ -416,15 +426,15 @@ if (serverPages.length > 0 || hasErrorPages) {
   try {
     const result = await build({
       entryPoints: [dispatcherPath],
-      bundle: true,
-      format: 'esm',
-      platform: 'node',
-      target: 'node20',
-      jsx: 'automatic',
-      banner: CJS_COMPAT_BANNER,
-      external: NODE_BUILTINS,
-      define: { 'process.env.NODE_ENV': '"production"' },
-      write: false,
+      bundle:      true,
+      format:      'esm',
+      platform:    'node',
+      target:      'node20',
+      jsx:         'automatic',
+      banner:      CJS_COMPAT_BANNER,
+      external:    NODE_BUILTINS,
+      define:      { 'process.env.NODE_ENV': '"production"' },
+      write:       false,
     });
     emitVercelFunction('pages', result.outputFiles[0].text);
     console.log(`  built     Pages dispatcher → pages.func  (${serverPages.length} page(s))`);

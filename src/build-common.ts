@@ -771,7 +771,15 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     const hydrated = new Set<string>();
     // Merge query params into page props to match dev behaviour (ssr.ts mergedParams).
-    const merged = { ...query, ...params } as any;
+    // Error props (__errorMessage, __errorStack, __errorStatus) are injected by the
+    // server entry when routing to _500.mjs after a handler failure.
+    const errorProps: Record<string, string | undefined> = {};
+    const ep = parsed.searchParams;
+    if (ep.has('__errorMessage')) errorProps.errorMessage = ep.get('__errorMessage') ?? undefined;
+    if (ep.has('__errorStack'))   errorProps.errorStack   = ep.get('__errorStack')   ?? undefined;
+    if (ep.has('__errorStatus'))  errorProps.errorStatus  = ep.get('__errorStatus')  ?? undefined;
+
+    const merged = { ...query, ...params, ...errorProps } as any;
     const wrapped  = wrapWithLayouts({ type: __page__.default, props: merged, key: null, ref: null });
 
     let appHtml = '';
@@ -839,10 +847,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(html);
   } catch (err: any) {
-    console.error('[page render error]', err);
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.end('Internal Server Error');
+    // Re-throw so the server entry (build-node / build-vercel) can route to
+    // the _500 page handler. Do not swallow the error here.
+    throw err;
   }
 }
 `;

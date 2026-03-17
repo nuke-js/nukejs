@@ -226,6 +226,15 @@ const server = http.createServer(async (req, res) => {
       if (fs.existsSync(e500)) {
         try {
           const m500 = await import(pathToFileURL(e500).href);
+          // Inject error info as query params so _500 page receives them as props.
+          const errMsg   = err instanceof Error ? err.message : String(err);
+          const errStack = err instanceof Error ? err.stack   : undefined;
+          const errStatus = err?.status ?? err?.statusCode;
+          const eq = new URLSearchParams();
+          eq.set('__errorMessage', errMsg);
+          if (errStack)  eq.set('__errorStack',  errStack);
+          if (errStatus) eq.set('__errorStatus', String(errStatus));
+          req.url = '/_500?' + eq.toString();
           await m500.default(req, res);
           return;
         } catch (e) { console.error('[_500 render error]', e); }

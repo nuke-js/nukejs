@@ -329,6 +329,29 @@ ${bodyScriptsHtml}</body>
 // ─── Error page helper ────────────────────────────────────────────────────────
 
 /**
+ * Converts any thrown value into a plain props object safe to pass as React
+ * props and serialise into the page.
+ *
+ *   error.message  — human-readable description (string)
+ *   error.status   — HTTP status code, if present (number | undefined)
+ *   error.stack    — stack trace in dev only, omitted in production
+ */
+function serializeError(err: unknown): Record<string, string | string[]> {
+  if (err instanceof Error) {
+    const props: Record<string, string> = {
+      errorMessage: err.message,
+    };
+    if (process.env.NODE_ENV !== 'production' && err.stack)
+      props.errorStack = err.stack;
+    const status = (err as any).status ?? (err as any).statusCode;
+    if (status != null)
+      props.errorStatus = String(status);
+    return props;
+  }
+  return { errorMessage: String(err) };
+}
+
+/**
  * Attempts to render `_404.tsx` or `_500.tsx` from pagesDir.
  * Returns true if the error page was found and rendered, false otherwise.
  */
@@ -338,12 +361,16 @@ async function tryRenderErrorPage(
   res:        ServerResponse,
   isDev:      boolean,
   req?:       IncomingMessage,
+  error?:     unknown,
 ): Promise<boolean> {
   const errorFile = path.join(pagesDir, `_${statusCode}.tsx`);
   if (!fs.existsSync(errorFile)) return false;
 
+  // Serialize the error into safe props the page component can read.
+  const errorProps = error != null ? serializeError(error) : {};
+
   try {
-    await renderFile(errorFile, {}, '/', pagesDir, isDev, res, req, statusCode, false);
+    await renderFile(errorFile, errorProps, '/', pagesDir, isDev, res, req, statusCode, false);
     return true;
   } catch (err) {
     log.error(`Error rendering _${statusCode}.tsx:`, err);
@@ -388,7 +415,7 @@ export async function serverSideRender(
     await renderFile(filePath, params, url, pagesDir, isDev, res, req, 200, skipClientSSR);
   } catch (err) {
     log.error('SSR render error:', err);
-    if (await tryRenderErrorPage(500, pagesDir, res, isDev, req)) return;
+    if (await tryRenderErrorPage(500, pagesDir, res, isDev, req, err)) return;
     res.statusCode = 500;
     res.end('Internal Server Error');
   }

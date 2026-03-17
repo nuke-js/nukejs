@@ -270,14 +270,12 @@ async function renderFunctionComponent(
   }
 
   // Server component — call it and recurse into the result.
-  try {
-    const result   = type(props);
-    const resolved = result?.then ? await result : result;
-    return renderElementToHtml(resolved, ctx);
-  } catch (err) {
-    log.error('Error rendering component:', err);
-    return `<div style="color:red">Error rendering component: ${escapeHtml(String(err))}</div>`;
-  }
+  // Do NOT catch here: errors must propagate up so serverSideRender can
+  // render _500.tsx. The client-component catch above is kept because those
+  // errors are hydration failures, not page-level errors.
+  const result   = type(props);
+  const resolved = result?.then ? await result : result;
+  return renderElementToHtml(resolved, ctx);
 }
 
 // ─── Prop serialization ───────────────────────────────────────────────────────
