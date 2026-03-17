@@ -24,6 +24,7 @@ npm create nuke@latest
 - [Configuration](#configuration)
 - [Link Component & Navigation](#link-component--navigation)
 - [useRequest() — URL Params, Query & Headers](#userequest--url-params-query--headers)
+- [Error Pages](#error-pages)
 - [Building & Deploying](#building--deploying)
 
 ## Overview
@@ -711,6 +712,81 @@ export default function Home() {
 ```
 
 Changing `?lang=fr` in the URL re-renders client components automatically.
+
+---
+
+## Error Pages
+
+NukeJS supports custom error pages for **404 Not Found** and **500 Internal Server Error**. Place them directly in `app/pages/` — they are standard server components and support everything regular pages do: layouts, `useHtml()`, client components, and HMR in dev.
+
+### `_404.tsx` — Page Not Found
+
+Rendered when no route matches the requested URL.
+
+```tsx
+// app/pages/_404.tsx
+import { useHtml } from 'nukejs';
+import { Link } from 'nukejs';
+
+export default function NotFound() {
+  useHtml({ title: 'Page Not Found' });
+
+  return (
+    <main>
+      <h1>404 — Page Not Found</h1>
+      <p>The page you're looking for doesn't exist.</p>
+      <Link href="/">Go home</Link>
+    </main>
+  );
+}
+```
+
+### `_500.tsx` — Internal Server Error
+
+Rendered when a page handler throws an unhandled error. The error is passed as optional props so you can display details in development.
+
+```tsx
+// app/pages/_500.tsx
+import { useHtml } from 'nukejs';
+import { Link } from 'nukejs';
+
+interface ErrorProps {
+  errorMessage?: string; // human-readable error description
+  errorStatus?:  string; // HTTP status code if present on the thrown error
+  errorStack?:   string; // stack trace — only populated in development
+}
+
+export default function ServerError({ errorMessage, errorStack }: ErrorProps) {
+  useHtml({ title: 'Something went wrong' });
+
+  return (
+    <main>
+      <h1>500 — Server Error</h1>
+      <p>Something went wrong on our end. Please try again.</p>
+      {errorMessage && <p><strong>{errorMessage}</strong></p>}
+      {errorStack   && <pre>{errorStack}</pre>}
+      <Link href="/">Go home</Link>
+    </main>
+  );
+}
+```
+
+### Behaviour
+
+| Scenario | Without error page | With error page |
+|---|---|---|
+| Unknown URL | Plain-text `Page not found` (404) | `_404.tsx` rendered with 404 status |
+| Page handler throws | Plain-text `Internal Server Error` (500) | `_500.tsx` rendered with 500 status |
+| `<Link>` to unknown URL | Full page reload | In-place SPA navigation, no reload |
+| HMR save of `_404.tsx` / `_500.tsx` | — | Current page re-fetches immediately |
+
+### Notes
+
+- Error pages are **excluded from routing** — `/_404` and `/_500` are not reachable as URLs.
+- They participate in the root `layout.tsx` like any other page.
+- Both are fully bundled into the production output (Node.js and Vercel) — no runtime file-system access required.
+- The correct HTTP status code (404 or 500) is always sent in the response.
+- `errorStack` is only populated in development (`NODE_ENV !== 'production'`).
 
 ---
 
