@@ -466,7 +466,8 @@ function setupNavigation(log: ReturnType<typeof makeLogger>): void {
 
       const response = await fetch(fetchUrl, { headers: { Accept: 'text/html' } });
       if (!response.ok) {
-        log.error('Navigation fetch failed:', response.status);
+        log.error('Navigation fetch failed:', response.status, '— falling back to full reload');
+        window.location.href = href;
         return;
       }
 
