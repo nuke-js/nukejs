@@ -17,10 +17,10 @@
  *     built-ins correctly inside the ESM output bundle.
  */
 
-import fs   from 'fs';
+import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'node:crypto';
-import { build }       from 'esbuild';
+import { build } from 'esbuild';
 
 import { loadConfig } from './config';
 import {
@@ -38,9 +38,9 @@ import {
 
 // ─── Output directories ───────────────────────────────────────────────────────
 
-const OUTPUT_DIR    = path.resolve('.vercel/output');
+const OUTPUT_DIR = path.resolve('.vercel/output');
 const FUNCTIONS_DIR = path.join(OUTPUT_DIR, 'functions');
-const STATIC_DIR    = path.join(OUTPUT_DIR, 'static');
+const STATIC_DIR = path.join(OUTPUT_DIR, 'static');
 
 // Clean the entire .vercel/output/ folder before building so stale function
 // bundles, removed routes, and renamed pages don't linger in the output.
@@ -54,9 +54,9 @@ for (const dir of [FUNCTIONS_DIR, STATIC_DIR])
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const config     = await loadConfig();
+const config = await loadConfig();
 const SERVER_DIR = path.resolve(config.serverDir);
-const PAGES_DIR  = path.resolve('./app/pages');
+const PAGES_DIR = path.resolve('./app/pages');
 const PUBLIC_DIR = path.resolve('./app/public');
 
 // ─── Shared esbuild config ────────────────────────────────────────────────────
@@ -200,11 +200,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
  */
 function makePagesDispatcherSource(
   routes: Array<{
-    adapterPath:   string;
-    srcRegex:      string;
-    paramNames:    string[];
+    adapterPath: string;
+    srcRegex: string;
+    paramNames: string[];
     catchAllNames: string[];
   }>,
+  errorAdapters: { adapter404?: string; adapter500?: string } = {},
 ): string {
   const imports = routes
     .map((r, i) => `import __page_${i}__ from ${JSON.stringify(r.adapterPath)};`)
@@ -216,9 +217,26 @@ function makePagesDispatcherSource(
     )
     .join('\n');
 
+  const error404Import = errorAdapters.adapter404
+    ? `import __error_404__ from ${JSON.stringify(errorAdapters.adapter404)};`
+    : '';
+  const error500Import = errorAdapters.adapter500
+    ? `import __error_500__ from ${JSON.stringify(errorAdapters.adapter500)};`
+    : '';
+
+  const notFoundHandler = errorAdapters.adapter404
+    ? `  try { return await __error_404__(req, res); } catch(e) { console.error('[_404 error]', e); }`
+    : `  res.statusCode = 404;\n  res.setHeader('Content-Type', 'text/plain; charset=utf-8');\n  res.end('Not Found');`;
+
+  const errorHandler = errorAdapters.adapter500
+    ? `    try { return await __error_500__(req, res); } catch(e) { console.error('[_500 error]', e); }`
+    : `    res.statusCode = 500;\n    res.setHeader('Content-Type', 'text/plain; charset=utf-8');\n    res.end('Internal Server Error');`;
+
   return `\
 import type { IncomingMessage, ServerResponse } from 'http';
 ${imports}
+${error404Import}
+${error500Import}
 
 const ROUTES: Array<{
   regex:    string;
@@ -241,7 +259,6 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     route.params.forEach((name, i) => {
       const raw = m[i + 1] ?? '';
       if (catchAllSet.has(name)) {
-        // Encode catch-all as repeated keys so the handler can getAll() → string[]
         raw.split('/').filter(Boolean).forEach(seg => url.searchParams.append(name, seg));
       } else {
         url.searchParams.set(name, raw);
@@ -249,12 +266,16 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     });
     req.url = pathname + (url.search || '');
 
-    return route.handler(req, res);
+    try {
+      return await route.handler(req, res);
+    } catch (err) {
+      console.error('[handler error]', err);
+${errorHandler}
+      return;
+    }
   }
 
-  res.statusCode = 404;
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.end('Not Found');
+${notFoundHandler}
 }
 `;
 }
@@ -277,13 +298,13 @@ if (apiRoutes.length > 0) {
   try {
     const result = await build({
       entryPoints: [dispatcherPath],
-      bundle:      true,
-      format:      'esm',
-      platform:    'node',
-      target:      'node20',
-      banner:      CJS_COMPAT_BANNER,
-      external:    NODE_BUILTINS,
-      write:       false,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      target: 'node20',
+      banner: CJS_COMPAT_BANNER,
+      external: NODE_BUILTINS,
+      write: false,
     });
     emitVercelFunction('api', result.outputFiles[0].text);
     console.log(`  built     API dispatcher → api.func  (${apiRoutes.length} route(s))`);
@@ -301,10 +322,11 @@ if (apiRoutes.length > 0) {
 // ─── Build Pages function ─────────────────────────────────────────────────────
 
 const serverPages = collectServerPages(PAGES_DIR);
+const hasErrorPages = ['_404.tsx', '_500.tsx'].some(f => fs.existsSync(path.join(PAGES_DIR, f)));
 
-if (serverPages.length > 0) {
+if (serverPages.length > 0 || hasErrorPages) {
   // Pass 1 — bundle all client components to static files.
-  const globalRegistry  = collectGlobalClientRegistry(serverPages, PAGES_DIR);
+  const globalRegistry = collectGlobalClientRegistry(serverPages, PAGES_DIR);
   const prerenderedHtml = await bundleClientComponents(globalRegistry, PAGES_DIR, STATIC_DIR);
   const prerenderedRecord = Object.fromEntries(prerenderedHtml);
 
@@ -314,7 +336,7 @@ if (serverPages.length > 0) {
   const tempAdapterPaths: string[] = [];
 
   for (const page of serverPages) {
-    const adapterDir  = path.dirname(page.absPath);
+    const adapterDir = path.dirname(page.absPath);
     const adapterPath = path.join(adapterDir, `_page_adapter_${randomBytes(4).toString('hex')}.ts`);
 
     const layoutPaths = findPageLayouts(page.absPath, PAGES_DIR);
@@ -330,14 +352,14 @@ if (serverPages.length > 0) {
     fs.writeFileSync(
       adapterPath,
       makePageAdapterSource({
-        pageImport:           JSON.stringify('./' + path.basename(page.absPath)),
+        pageImport: JSON.stringify('./' + path.basename(page.absPath)),
         layoutImports,
         clientComponentNames,
-        allClientIds:         [...registry.keys()],
-        layoutArrayItems:     layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
-        prerenderedHtml:      prerenderedRecord,
-        routeParamNames:      page.paramNames,
-        catchAllNames:        page.catchAllNames,
+        allClientIds: [...registry.keys()],
+        layoutArrayItems: layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
+        prerenderedHtml: prerenderedRecord,
+        routeParamNames: page.paramNames,
+        catchAllNames: page.catchAllNames,
       }),
     );
 
@@ -346,33 +368,70 @@ if (serverPages.length > 0) {
   }
 
   const dispatcherRoutes = serverPages.map((page, i) => ({
-    adapterPath:   tempAdapterPaths[i],
-    srcRegex:      page.srcRegex,
-    paramNames:    page.paramNames,
+    adapterPath: tempAdapterPaths[i],
+    srcRegex: page.srcRegex,
+    paramNames: page.paramNames,
     catchAllNames: page.catchAllNames,
   }));
 
+  // Build error page adapters and include them in the dispatcher.
+  const errorAdapters: { adapter404?: string; adapter500?: string } = {};
+  const errorAdapterPaths: string[] = [];
+  for (const [statusCode, key] of [[404, 'adapter404'], [500, 'adapter500']] as const) {
+    const src = path.join(PAGES_DIR, `_${statusCode}.tsx`);
+    if (!fs.existsSync(src)) continue;
+
+    console.log(`  building  _${statusCode}.tsx  \u2192  pages.func  [error page]`);
+    const adapterDir = path.dirname(src);
+    const adapterPath = path.join(adapterDir, `_error_adapter_${randomBytes(4).toString('hex')}.ts`);
+
+    const layoutPaths = findPageLayouts(src, PAGES_DIR);
+    const { registry, clientComponentNames } = buildPerPageRegistry(src, layoutPaths, PAGES_DIR);
+    const layoutImports = layoutPaths
+      .map((lp, i) => {
+        const rel = path.relative(adapterDir, lp).replace(/\\/g, '/');
+        return `import __layout_${i}__ from ${JSON.stringify(rel.startsWith('.') ? rel : './' + rel)};`;
+      })
+      .join('\n');
+
+    fs.writeFileSync(adapterPath, makePageAdapterSource({
+      pageImport: JSON.stringify('./' + path.basename(src)),
+      layoutImports,
+      clientComponentNames,
+      allClientIds: [...registry.keys()],
+      layoutArrayItems: layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
+      prerenderedHtml: prerenderedRecord,
+      routeParamNames: [],
+      catchAllNames: [],
+      statusCode,
+    }));
+
+    errorAdapters[key] = adapterPath;
+    errorAdapterPaths.push(adapterPath);
+  }
+
   const dispatcherPath = path.join(PAGES_DIR, `_pages_dispatcher_${randomBytes(4).toString('hex')}.ts`);
-  fs.writeFileSync(dispatcherPath, makePagesDispatcherSource(dispatcherRoutes));
+  fs.writeFileSync(dispatcherPath, makePagesDispatcherSource(dispatcherRoutes, errorAdapters));
 
   try {
     const result = await build({
       entryPoints: [dispatcherPath],
-      bundle:      true,
-      format:      'esm',
-      platform:    'node',
-      target:      'node20',
-      jsx:         'automatic',
-      banner:      CJS_COMPAT_BANNER,
-      external:    NODE_BUILTINS,
-      define:      { 'process.env.NODE_ENV': '"production"' },
-      write:       false,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      target: 'node20',
+      jsx: 'automatic',
+      banner: CJS_COMPAT_BANNER,
+      external: NODE_BUILTINS,
+      define: { 'process.env.NODE_ENV': '"production"' },
+      write: false,
     });
     emitVercelFunction('pages', result.outputFiles[0].text);
     console.log(`  built     Pages dispatcher → pages.func  (${serverPages.length} page(s))`);
   } finally {
     fs.unlinkSync(dispatcherPath);
     for (const p of tempAdapterPaths) if (fs.existsSync(p)) fs.unlinkSync(p);
+    for (const p of errorAdapterPaths) if (fs.existsSync(p)) fs.unlinkSync(p);
   }
 
   for (const { srcRegex } of serverPages)

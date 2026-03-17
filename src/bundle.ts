@@ -465,10 +465,17 @@ function setupNavigation(log: ReturnType<typeof makeLogger>): void {
         : href;
 
       const response = await fetch(fetchUrl, { headers: { Accept: 'text/html' } });
+      // Allow HTML error pages (404, 500) to be rendered in-place via SPA
+      // navigation. Only fall back to a full reload for non-HTML responses
+      // (e.g. JSON API errors) where we have no page to display.
       if (!response.ok) {
-        log.error('Navigation fetch failed:', response.status, '— falling back to full reload');
-        window.location.href = href;
-        return;
+        const ct = response.headers.get('content-type') ?? '';
+        if (!ct.includes('text/html')) {
+          log.error('Navigation fetch failed:', response.status, '— falling back to full reload');
+          window.location.href = href;
+          return;
+        }
+        log.info('Navigation returned', response.status, '— rendering error page in-place');
       }
 
       const parser  = new DOMParser();

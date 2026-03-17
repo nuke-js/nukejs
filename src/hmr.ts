@@ -106,6 +106,14 @@ function buildPayload(filename: string): object {
   const normalized = filename.replace(/\\/g, '/');
 
   if (normalized.startsWith('pages/')) {
+    const stem = path.basename(normalized, path.extname(normalized));
+
+    // Error pages don't have a real URL route — broadcast 'replace' so the
+    // browser re-fetches the current page and picks up the new render.
+    if (stem === '_404' || stem === '_500') {
+      return { type: 'replace', component: stem };
+    }
+
     const url = pageFileToUrl(normalized);
     return { type: 'reload', url };
   }

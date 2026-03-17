@@ -251,7 +251,8 @@ export function collectServerPages(pagesDir: string): ServerPage[] {
   if (!fs.existsSync(pagesDir)) return [];
   return walkFiles(pagesDir)
     .filter(relPath => {
-      if (path.basename(relPath, path.extname(relPath)) === 'layout') return false;
+      const stem = path.basename(relPath, path.extname(relPath));
+      if (stem === 'layout' || stem === '_404' || stem === '_500') return false;
       return isServerComponent(path.join(pagesDir, relPath));
     })
     .map(relPath => ({
@@ -274,6 +275,16 @@ export function collectGlobalClientRegistry(
     for (const [id, p] of findClientComponentsInTree(absPath, pagesDir))
       registry.set(id, p);
     for (const layoutPath of findPageLayouts(absPath, pagesDir))
+      for (const [id, p] of findClientComponentsInTree(layoutPath, pagesDir))
+        registry.set(id, p);
+  }
+  // Also scan error pages so their client components are bundled.
+  for (const stem of ['_404', '_500']) {
+    const errorFile = path.join(pagesDir, `${stem}.tsx`);
+    if (!fs.existsSync(errorFile)) continue;
+    for (const [id, p] of findClientComponentsInTree(errorFile, pagesDir))
+      registry.set(id, p);
+    for (const layoutPath of findPageLayouts(errorFile, pagesDir))
       for (const [id, p] of findClientComponentsInTree(layoutPath, pagesDir))
         registry.set(id, p);
   }
@@ -319,17 +330,29 @@ export function buildPerPageRegistry(
  *   Pass 2 — bundles every server-component page into a self-contained ESM
  *             handler and returns the results as `BuiltPage[]`.
  */
+export interface BuildPagesResult {
+  pages:  BuiltPage[];
+  has404: boolean;
+  has500: boolean;
+}
+
 export async function buildPages(
-  pagesDir:  string,
-  staticDir: string,
-): Promise<BuiltPage[]> {
+  pagesDir:     string,
+  staticDir:    string,
+  outPagesDir?: string,
+): Promise<BuildPagesResult> {
   const serverPages = collectServerPages(pagesDir);
 
   if (fs.existsSync(pagesDir) && walkFiles(pagesDir).length > 0 && serverPages.length === 0) {
     console.warn(`⚠  Pages found in ${pagesDir} but none are server components`);
   }
 
-  if (serverPages.length === 0) return [];
+  if (serverPages.length === 0) {
+    const errorResult = outPagesDir
+      ? await buildErrorPages(pagesDir, outPagesDir, {})
+      : { has404: false, has500: false };
+    return { pages: [], ...errorResult };
+  }
 
   const globalRegistry    = collectGlobalClientRegistry(serverPages, pagesDir);
   const prerenderedHtml   = await bundleClientComponents(globalRegistry, pagesDir, staticDir);
@@ -357,7 +380,11 @@ export async function buildPages(
     builtPages.push({ ...page, bundleText });
   }
 
-  return builtPages;
+  const errorResult = outPagesDir
+    ? await buildErrorPages(pagesDir, outPagesDir, prerenderedRecord)
+    : { has404: false, has500: false };
+
+  return { pages: builtPages, ...errorResult };
 }
 
 // ─── API adapter template ─────────────────────────────────────────────────────
@@ -439,6 +466,11 @@ export interface PageAdapterOptions {
   routeParamNames: string[];
   /** Subset of routeParamNames whose values are string[] (catch-all segments) */
   catchAllNames: string[];
+  /**
+   * HTTP status code sent with the response (default 200).
+   * Set to 404 / 500 when building error page handlers.
+   */
+  statusCode?: number;
 }
 
 /**
@@ -455,6 +487,7 @@ export function makePageAdapterSource(opts: PageAdapterOptions): string {
   const {
     pageImport, layoutImports, clientComponentNames, allClientIds,
     layoutArrayItems, prerenderedHtml, routeParamNames, catchAllNames,
+    statusCode = 200,
   } = opts;
 
   return `\
@@ -802,7 +835,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 \${bodyScriptsHtml}</body>
 </html>\`;
 
-    res.statusCode = 200;
+    res.statusCode = ${statusCode};
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(html);
   } catch (err: any) {
@@ -854,6 +887,8 @@ export interface PageBundleOptions {
   prerenderedHtml:      Record<string, string>;
   routeParamNames:      string[];
   catchAllNames:        string[];
+  /** HTTP status code for the response (default 200). */
+  statusCode?:          number;
 }
 
 /**
@@ -865,6 +900,7 @@ export async function bundlePageHandler(opts: PageBundleOptions): Promise<string
   const {
     absPath, clientComponentNames, allClientIds,
     layoutPaths, prerenderedHtml, routeParamNames, catchAllNames,
+    statusCode,
   } = opts;
 
   const adapterDir  = path.dirname(absPath);
@@ -886,6 +922,7 @@ export async function bundlePageHandler(opts: PageBundleOptions): Promise<string
     prerenderedHtml,
     routeParamNames,
     catchAllNames,
+    statusCode,
   }));
 
   let text: string;
@@ -976,6 +1013,57 @@ export async function bundleClientComponents(
 
   console.log(`  bundled   ${globalRegistry.size} client component(s) → ${path.relative(process.cwd(), outDir)}/`);
   return prerendered;
+}
+
+// ─── Error page builder ────────────────────────────────────────────────
+
+export interface BuiltErrorPages {
+  has404: boolean;
+  has500: boolean;
+}
+
+/**
+ * Builds _404.tsx and _500.tsx from pagesDir into `outPagesDir` as
+ * self-contained ESM handlers (_404.mjs / _500.mjs).
+ *
+ * Called AFTER bundleClientComponents so client components used inside error
+ * pages are already present in prerenderedHtml.
+ */
+export async function buildErrorPages(
+  pagesDir:        string,
+  outPagesDir:     string,
+  prerenderedHtml: Record<string, string>,
+): Promise<BuiltErrorPages> {
+  const result: BuiltErrorPages = { has404: false, has500: false };
+
+  for (const statusCode of [404, 500] as const) {
+    const src = path.join(pagesDir, `_${statusCode}.tsx`);
+    if (!fs.existsSync(src)) continue;
+
+    console.log(`  building  _${statusCode}.tsx  →  pages/_${statusCode}.mjs`);
+
+    const layoutPaths = findPageLayouts(src, pagesDir);
+    const { registry, clientComponentNames } = buildPerPageRegistry(src, layoutPaths, pagesDir);
+
+    const bundleText = await bundlePageHandler({
+      absPath:              src,
+      pagesDir,
+      clientComponentNames,
+      allClientIds:         [...registry.keys()],
+      layoutPaths,
+      prerenderedHtml,
+      routeParamNames:      [],
+      catchAllNames:        [],
+      statusCode,
+    });
+
+    fs.mkdirSync(outPagesDir, { recursive: true });
+    fs.writeFileSync(path.join(outPagesDir, `_${statusCode}.mjs`), bundleText);
+    if (statusCode === 404) result.has404 = true;
+    if (statusCode === 500) result.has500 = true;
+  }
+
+  return result;
 }
 
 /**

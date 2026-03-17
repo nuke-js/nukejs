@@ -96,7 +96,7 @@ for (const { srcRegex, paramNames, catchAllNames, funcPath, absPath } of apiRout
 
 // ─── Page routes ──────────────────────────────────────────────────────────────
 
-const builtPages = await buildPages(PAGES_DIR, STATIC_DIR);
+const { pages: builtPages, has404, has500 } = await buildPages(PAGES_DIR, STATIC_DIR, PAGES_DIR_);
 
 for (const { srcRegex, paramNames, catchAllNames, funcPath, bundleText } of builtPages) {
   const filename = funcPathToFilename(funcPath, 'page');
@@ -106,6 +106,9 @@ for (const { srcRegex, paramNames, catchAllNames, funcPath, bundleText } of buil
 
   manifest.push({ srcRegex, paramNames, catchAllNames, handler: path.join('pages', filename), type: 'page' });
 }
+
+if (has404) console.log('  built     _404.tsx  →  pages/_404.mjs');
+if (has500) console.log('  built     _500.tsx  →  pages/_500.mjs');
 
 // ─── Manifest ─────────────────────────────────────────────────────────────────
 
@@ -214,11 +217,35 @@ const server = http.createServer(async (req, res) => {
     });
     req.url = clean + (qs.toString() ? '?' + qs.toString() : '');
 
-    const mod = await import(pathToFileURL(path.join(__dirname, handler)).href);
-    await mod.default(req, res);
+    try {
+      const mod = await import(pathToFileURL(path.join(__dirname, handler)).href);
+      await mod.default(req, res);
+    } catch (err) {
+      console.error('[handler error]', err);
+      const e500 = path.join(__dirname, 'pages', '_500.mjs');
+      if (fs.existsSync(e500)) {
+        try {
+          const m500 = await import(pathToFileURL(e500).href);
+          await m500.default(req, res);
+          return;
+        } catch (e) { console.error('[_500 render error]', e); }
+      }
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'text/plain');
+      res.end('Internal Server Error');
+    }
     return;
   }
 
+  // 3. 404 — serve _404.mjs if built, otherwise plain text.
+  const e404 = path.join(__dirname, 'pages', '_404.mjs');
+  if (fs.existsSync(e404)) {
+    try {
+      const m404 = await import(pathToFileURL(e404).href);
+      await m404.default(req, res);
+      return;
+    } catch (err) { console.error('[_404 render error]', err); }
+  }
   res.statusCode = 404;
   res.setHeader('Content-Type', 'text/plain');
   res.end('Not found');

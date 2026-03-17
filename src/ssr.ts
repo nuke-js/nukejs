@@ -35,6 +35,7 @@
  */
 
 import path from 'path';
+import fs   from 'fs';
 import { createElement } from 'react';
 import { pathToFileURL } from 'url';
 import { tsImport } from 'tsx/esm/api';
@@ -186,41 +187,26 @@ function renderManagedBodyScripts(store: HtmlStore): string[] {
   return ['  <!--n-body-scripts-->', ...bodyScripts.map(renderScriptTag), '  <!--/n-body-scripts-->'];
 }
 
-// ─── Main SSR handler ─────────────────────────────────────────────────────────
+// ─── Core render helper ───────────────────────────────────────────────────────
 
 /**
- * Renders a page for the given URL and writes the full HTML response.
- *
- * @param url       The raw request URL (may include query string).
- * @param res       Node ServerResponse to write to.
- * @param pagesDir  Absolute path to the app/pages directory.
- * @param isDev     When true, injects the HMR client script into the page.
+ * Renders a specific page file and writes the full HTML response.
+ * Shared by the normal render path and the _404/_500 error page fallbacks.
  */
-export async function serverSideRender(
-  url:      string,
-  res:      ServerResponse,
-  pagesDir: string,
-  isDev   = false,
-  req?:     IncomingMessage,
+async function renderFile(
+  filePath:      string,
+  params:        Record<string, string | string[]>,
+  url:           string,
+  pagesDir:      string,
+  isDev:         boolean,
+  res:           ServerResponse,
+  req:           IncomingMessage | undefined,
+  statusCode:    number,
+  skipClientSSR: boolean,
 ): Promise<void> {
-  const skipClientSSR = url.includes('__hmr=1');
-  const cleanUrl      = url.split('?')[0];
+  const cleanUrl = url.split('?')[0];
 
-  // ── Route resolution ────────────────────────────────────────────────────────
-  const routeMatch = matchRoute(cleanUrl, pagesDir);
-  if (!routeMatch) {
-    log.verbose(`No route found for: ${url}`);
-    res.statusCode = 404;
-    res.end('Page not found');
-    return;
-  }
-
-  const { filePath, params, routePattern } = routeMatch;
-  log.verbose(`SSR ${cleanUrl} -> ${path.relative(process.cwd(), filePath)}`);
-
-  // Merge query string params into props so page components can access them
-  // the same way in dev and production.  Route params take precedence so a
-  // ?slug=x in the query string cannot shadow a [slug] dynamic segment.
+  // ── Query string parsing ─────────────────────────────────────────────────────
   const searchParams = new URL(url, 'http://localhost').searchParams;
   const queryParams: Record<string, string | string[]> = {};
   searchParams.forEach((_, k) => {
@@ -231,15 +217,12 @@ export async function serverSideRender(
   });
   const mergedParams = { ...queryParams, ...params };
 
-  // normaliseHeaders keeps every header (including cookies) for server components.
-  // sanitiseHeaders additionally strips credentials before embedding in HTML.
-  const rawHeaders    = req?.headers ?? {};
-  const normHeaders   = normaliseHeaders(rawHeaders as Record<string, string | string[] | undefined>);
-  const safeHeaders   = sanitiseHeaders(rawHeaders as Record<string, string | string[] | undefined>);
+  // ── Headers ──────────────────────────────────────────────────────────────────
+  const rawHeaders  = req?.headers ?? {};
+  const normHeaders = normaliseHeaders(rawHeaders as Record<string, string | string[] | undefined>);
+  const safeHeaders = sanitiseHeaders(rawHeaders as Record<string, string | string[] | undefined>);
 
-  // ── Module import ───────────────────────────────────────────────────────────
-  // tsImport bypasses Node's ESM module cache entirely so edits are reflected
-  // immediately on every request in dev.
+  // ── Module import ─────────────────────────────────────────────────────────────
   const layoutPaths = findLayoutsForRoute(filePath, pagesDir);
   const { default: PageComponent } = await tsImport(
     pathToFileURL(filePath).href,
@@ -250,8 +233,7 @@ export async function serverSideRender(
     layoutPaths,
   );
 
-  // ── Client component discovery ──────────────────────────────────────────────
-  // Walk the import tree for both the page and its layout chain.
+  // ── Client component discovery ───────────────────────────────────────────────
   const registry = new Map<string, string>();
   for (const [id, p] of findClientComponentsInTree(filePath, pagesDir))
     registry.set(id, p);
@@ -259,20 +241,13 @@ export async function serverSideRender(
     for (const [id, p] of findClientComponentsInTree(layoutPath, pagesDir))
       registry.set(id, p);
 
-  log.verbose(
-    `Page ${routePattern}: found ${registry.size} client component(s)`,
-    `[${[...registry.keys()].join(', ')}]`,
-  );
-
-  // ── Rendering ───────────────────────────────────────────────────────────────
+  // ── Rendering ─────────────────────────────────────────────────────────────────
   const ctx: RenderContext = { registry, hydrated: new Set(), skipClientSSR };
 
   let appHtml = '';
-  // runWithRequestStore makes { params, query, headers } available to any server
-  // component that calls useRequest() during this render.
   const store: HtmlStore = await runWithRequestStore(
     {
-      url:      url,
+      url,
       pathname: cleanUrl,
       params,
       query:    queryParams,
@@ -283,7 +258,7 @@ export async function serverSideRender(
     }),
   );
 
-  // ── Head assembly ───────────────────────────────────────────────────────────
+  // ── Head assembly ─────────────────────────────────────────────────────────────
   const pageTitle = resolveTitle(store.titleOps, 'NukeJS');
 
   const headLines: string[] = [
@@ -293,10 +268,7 @@ export async function serverSideRender(
     ...renderManagedHeadTags(store),
   ];
 
-  // ── Runtime data blob ───────────────────────────────────────────────────────
-  // Escape </script> sequences so the JSON cannot break out of the script tag.
-  // `query` and `headers` (sanitised) are included so useRequest() can read
-  // them from the client without an extra network round-trip.
+  // ── Runtime data blob ─────────────────────────────────────────────────────────
   const runtimeData = JSON.stringify({
     hydrateIds: [...ctx.hydrated],
     allIds:     [...registry.keys()],
@@ -310,13 +282,13 @@ export async function serverSideRender(
     .replace(/>/g, '\\u003e')
     .replace(/&/g, '\\u0026');
 
-  // ── Body scripts (position='body') ──────────────────────────────────────────
+  // ── Body scripts ──────────────────────────────────────────────────────────────
   const bodyScriptLines = renderManagedBodyScripts(store);
   const bodyScriptsHtml = bodyScriptLines.length > 0
     ? '\n' + bodyScriptLines.join('\n') + '\n'
     : '';
 
-  // ── Full document ───────────────────────────────────────────────────────────
+  // ── Full document ─────────────────────────────────────────────────────────────
   const html = `<!DOCTYPE html>
 ${openTag('html', store.htmlAttrs)}
 <head>
@@ -349,6 +321,75 @@ ${openTag('body', store.bodyAttrs)}
 ${bodyScriptsHtml}</body>
 </html>`;
 
+  res.statusCode = statusCode;
   res.setHeader('Content-Type', 'text/html');
   res.end(html);
+}
+
+// ─── Error page helper ────────────────────────────────────────────────────────
+
+/**
+ * Attempts to render `_404.tsx` or `_500.tsx` from pagesDir.
+ * Returns true if the error page was found and rendered, false otherwise.
+ */
+async function tryRenderErrorPage(
+  statusCode: number,
+  pagesDir:   string,
+  res:        ServerResponse,
+  isDev:      boolean,
+  req?:       IncomingMessage,
+): Promise<boolean> {
+  const errorFile = path.join(pagesDir, `_${statusCode}.tsx`);
+  if (!fs.existsSync(errorFile)) return false;
+
+  try {
+    await renderFile(errorFile, {}, '/', pagesDir, isDev, res, req, statusCode, false);
+    return true;
+  } catch (err) {
+    log.error(`Error rendering _${statusCode}.tsx:`, err);
+    return false;
+  }
+}
+
+// ─── Main SSR handler ─────────────────────────────────────────────────────────
+
+/**
+ * Renders a page for the given URL and writes the full HTML response.
+ *
+ * @param url       The raw request URL (may include query string).
+ * @param res       Node ServerResponse to write to.
+ * @param pagesDir  Absolute path to the app/pages directory.
+ * @param isDev     When true, injects the HMR client script into the page.
+ */
+export async function serverSideRender(
+  url:      string,
+  res:      ServerResponse,
+  pagesDir: string,
+  isDev   = false,
+  req?:     IncomingMessage,
+): Promise<void> {
+  const skipClientSSR = url.includes('__hmr=1');
+  const cleanUrl      = url.split('?')[0];
+
+  // ── Route resolution ────────────────────────────────────────────────────────
+  const routeMatch = matchRoute(cleanUrl, pagesDir);
+  if (!routeMatch) {
+    log.verbose(`No route found for: ${url}`);
+    if (await tryRenderErrorPage(404, pagesDir, res, isDev, req)) return;
+    res.statusCode = 404;
+    res.end('Page not found');
+    return;
+  }
+
+  const { filePath, params, routePattern } = routeMatch;
+  log.verbose(`SSR ${cleanUrl} -> ${path.relative(process.cwd(), filePath)}`);
+
+  try {
+    await renderFile(filePath, params, url, pagesDir, isDev, res, req, 200, skipClientSSR);
+  } catch (err) {
+    log.error('SSR render error:', err);
+    if (await tryRenderErrorPage(500, pagesDir, res, isDev, req)) return;
+    res.statusCode = 500;
+    res.end('Internal Server Error');
+  }
 }
