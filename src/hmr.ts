@@ -115,6 +115,15 @@ function buildPayload(filename: string): object {
     }
 
     const url = pageFileToUrl(normalized);
+
+    // Layout files are shared by every route under their directory.  A plain
+    // 'reload' with an exact URL would only trigger for the base path itself
+    // (e.g. '/blog'), missing any sub-pages currently open (e.g. '/blog/post').
+    // Send a dedicated 'layout-reload' so the client can prefix-match instead.
+    if (stem === 'layout') {
+      return { type: 'layout-reload', base: url };
+    }
+
     return { type: 'reload', url };
   }
 

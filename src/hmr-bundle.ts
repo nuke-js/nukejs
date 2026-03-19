@@ -67,6 +67,23 @@ export default function hmr(): void {
         return;
       }
 
+      if (msg.type === 'layout-reload') {
+        // A layout file changed.  Layouts are shared by every route under their
+        // directory, so we must reload whenever the current pathname lives under
+        // that layout's base path — not just when it matches exactly.
+        //
+        //   base '/blog'  →  reload if pathname is '/blog' or '/blog/*'
+        //   base '/'      →  reload on every page (root layout)
+        const base     = msg.base === '/' ? '' : (msg.base as string);
+        const pathname = window.location.pathname;
+        const isUnder  = pathname === (base || '/') || pathname.startsWith(base + '/');
+        if (isUnder) {
+          log.info('[HMR] Layout changed:', msg.base);
+          navigate(pathname + window.location.search);
+        }
+        return;
+      }
+
       if (msg.type === 'replace') {
         // A shared component or utility changed.  The current page might use
         // it, so we re-navigate to pick up the latest server render.
