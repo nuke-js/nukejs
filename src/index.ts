@@ -1,7 +1,11 @@
 // ─── Client-side hooks & components ────────────────────────────────────────
 export { useHtml } from './use-html';
+export type { HtmlOptions } from './use-html';
+
+// Head types — exported directly from their source so the public API is
+// unambiguous and the generated .d.ts barrel resolves them without hopping
+// through use-html as an intermediary.
 export type {
-    HtmlOptions,
     TitleValue,
     HtmlAttrs,
     BodyAttrs,
@@ -9,7 +13,7 @@ export type {
     LinkTag,
     ScriptTag,
     StyleTag,
-} from './use-html';
+} from './html-store';
 
 export { default as useRouter } from './use-router';
 

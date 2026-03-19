@@ -70,6 +70,7 @@ function processDist(dir: string) {
  */
 const PUBLIC_STEMS = new Set([
   'index',
+  'html-store',   // exported types (TitleValue, LinkTag, MetaTag, …) live here
   'use-html',
   'use-router',
   'use-request',
