@@ -30,16 +30,38 @@ import { log } from './logger';
 export default function hmr(): void {
   const es = new EventSource('/__hmr');
 
+  // Guard: onerror can fire multiple times if EventSource auto-retries before
+  // es.close() takes effect.  A single flag ensures waitForReconnect() is
+  // called at most once per hmr() invocation.
+  let reconnecting = false;
+
   es.onopen = () => {
+    reconnecting = false; // Reset if the connection recovers on its own.
     log.info('[HMR] Connected');
   };
 
   es.onerror = () => {
     // Connection dropped without a restart message (e.g. crash or network
     // blip).  Close cleanly and poll until the server is back.
+    if (reconnecting) return;
+    reconnecting = true;
     es.close();
     waitForReconnect();
   };
+
+  // When Chrome wakes a frozen tab the SSE connection is usually broken.
+  // Detect this via visibilitychange so we can start polling immediately
+  // rather than waiting for onerror (which may be delayed or suppressed).
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (es.readyState === EventSource.OPEN) return; // still healthy
+    if (reconnecting) return;                        // already polling
+    reconnecting = true;
+    es.close();
+    // Use a shorter interval on wake — the server is almost certainly still
+    // up, so we don't need the full 3-second default delay.
+    waitForReconnect(500, 20);
+  });
 
   es.onmessage = async (event) => {
     try {
@@ -104,9 +126,26 @@ export default function hmr(): void {
  * bundle.ts listens to.  Adds `hmr: true` in the detail so the navigation
  * handler appends `?__hmr=1`, which tells SSR to skip client-component
  * renderToString (faster HMR round-trips).
+ *
+ * Debounced with a 50 ms window.  When Chrome wakes a frozen tab, all SSE
+ * messages that buffered in the TCP receive buffer arrive at once — without
+ * debouncing every queued message would fire a separate fetch to /?__hmr=1.
+ * The debounce collapses the burst into a single navigation using the last
+ * received href (which is always the current pathname, so there is no loss).
  */
+let _navTimer: ReturnType<typeof setTimeout> | null = null;
+let _navHref:  string | null = null;
+
 function navigate(href: string): void {
-  window.dispatchEvent(new CustomEvent('locationchange', { detail: { href, hmr: true } }));
+  _navHref = href;
+  if (_navTimer) clearTimeout(_navTimer);
+  _navTimer = setTimeout(() => {
+    _navTimer = null;
+    if (_navHref !== null) {
+      window.dispatchEvent(new CustomEvent('locationchange', { detail: { href: _navHref, hmr: true } }));
+      _navHref = null;
+    }
+  }, 50);
 }
 
 // ─── Dynamic route pattern matching ──────────────────────────────────────────

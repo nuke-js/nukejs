@@ -498,7 +498,21 @@ function syncAttrs(live: Element, next: Element): void {
  * Falls back to a full page reload if anything goes wrong.
  */
 function setupNavigation(log: ReturnType<typeof makeLogger>): void {
+  // Prevent concurrent HMR navigations.  Without this guard a burst of SSE
+  // messages (e.g. multiple file changes arriving together after a tab wake)
+  // would fan out into N simultaneous fetches to /?__hmr=1.
+  // The debounce in hmr-bundle.ts collapses the event burst, but this flag
+  // is the last line of defence — it also covers regular SPA navigation races.
+  let hmrNavPending = false;
+
   window.addEventListener('locationchange', async ({ detail: { href, hmr } }: any) => {
+    if (hmr) {
+      if (hmrNavPending) {
+        log.info('[HMR] Navigation already in flight — skipping duplicate for', href);
+        return;
+      }
+      hmrNavPending = true;
+    }
     try {
       const fetchUrl = hmr
         ? href + (href.includes('?') ? '&' : '?') + '__hmr=1'
@@ -570,7 +584,8 @@ function setupNavigation(log: ReturnType<typeof makeLogger>): void {
       log.error('Navigation error, falling back to full reload:', err);
       window.location.href = href;
     } finally {
-      // Reset so the next client error can trigger navigation again.
+      // Reset so the next client error or HMR navigation can trigger again.
+      if (hmr) hmrNavPending = false;
       clientErrorPending = false;
     }
   });
