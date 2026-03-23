@@ -63,7 +63,9 @@ export function setupLocationChangeMonitor(): void {
   };
 
   // Back/forward navigation via the browser's native UI.
-  window.addEventListener('popstate', () => dispatch(window.location.pathname));
+  // Include search so back/forward navigation to URLs like /users?page=2
+  // fetches the correct resource instead of the bare pathname.
+  window.addEventListener('popstate', () => dispatch(window.location.pathname + window.location.search));
 }
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
@@ -575,7 +577,10 @@ function setupNavigation(log: ReturnType<typeof makeLogger>): void {
       const navData = JSON.parse(currDataEl?.textContent ?? '{}') as RuntimeData;
       log.info('🔄 Route →', href, '— mounting', navData.hydrateIds?.length ?? 0, 'component(s)');
 
-      const mods = await loadModules(navData.allIds ?? [], log, String(Date.now()));
+      // Cache-bust only for HMR navigations so the browser picks up freshly built
+      // files.  Regular SPA navigations should hit the browser cache — busting on
+      // every navigation would refetch every component bundle on each route change.
+      const mods = await loadModules(navData.allIds ?? [], log, hmr ? String(Date.now()) : '');
       await mountNodes(mods, log);
 
       window.scrollTo(0, 0);

@@ -243,9 +243,16 @@ export function extractDefaultExportName(filePath: string): string | null {
 // ─── Server page collection ───────────────────────────────────────────────────
 
 /**
- * Returns all server-component pages inside `pagesDir`, sorted most-specific
- * first so precise routes shadow catch-alls in routers.
- * layout.tsx files and "use client" files are excluded.
+ * Returns all routable pages inside `pagesDir`, sorted most-specific first so
+ * precise routes shadow catch-alls in routers.
+ *
+ * Both server components and top-level "use client" pages are included.
+ * A top-level "use client" page is treated as a page whose entire body is one
+ * client component boundary: the build adapter registers the page itself in
+ * CLIENT_COMPONENTS, and the runtime renders a hydration <span> for it —
+ * exactly what the dev-mode SSR renderer does.
+ *
+ * layout.tsx, _404.tsx, and _500.tsx are excluded (handled elsewhere).
  */
 export function collectServerPages(pagesDir: string): ServerPage[] {
   if (!fs.existsSync(pagesDir)) return [];
@@ -253,7 +260,7 @@ export function collectServerPages(pagesDir: string): ServerPage[] {
     .filter(relPath => {
       const stem = path.basename(relPath, path.extname(relPath));
       if (stem === 'layout' || stem === '_404' || stem === '_500') return false;
-      return isServerComponent(path.join(pagesDir, relPath));
+      return true; // include both server components and "use client" pages
     })
     .map(relPath => ({
       ...analyzeFile(relPath, 'page'),
