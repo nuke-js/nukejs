@@ -105,9 +105,13 @@ export function sanitiseHeaders(
   return out;
 }
 
-// ─── GlobalThis storage ───────────────────────────────────────────────────────
+// ─── GlobalThis storage ─────────────────────────────────────────────
 
-/** Well-known Symbol shared across all copies of this module in the process. */
+/**
+ * Shared via Symbol.for so all copies of this module loaded by tsImport
+ * in dev mode (page modules, layout modules, etc.) read and write the same
+ * slot on globalThis.
+ */
 const KEY = Symbol.for('__nukejs_request_store__');
 
 const getGlobal = (): RequestContext | null => (globalThis as any)[KEY] ?? null;
@@ -115,17 +119,13 @@ const setGlobal = (ctx: RequestContext | null): void => {
   (globalThis as any)[KEY] = ctx;
 };
 
-// ─── Public API ───────────────────────────────────────────────────────────────
+// ─── Public API ───────────────────────────────────────────────────────
 
 /**
  * Runs `fn` inside the context of the given request, then clears the store.
- *
- * Usage in the SSR pipeline:
- * ```ts
- * const store = await runWithRequestStore(ctx, async () => {
- *   appHtml = await renderElementToHtml(element, renderCtx);
- * });
- * ```
+ * The store is set synchronously before `fn` is called, so any code that
+ * reads getRequestStore() during the synchronous phase of a server component
+ * (before its first `await`) will always see the correct context.
  */
 export async function runWithRequestStore<T>(
   ctx: RequestContext,
@@ -135,7 +135,6 @@ export async function runWithRequestStore<T>(
   try {
     return await fn();
   } finally {
-    // Always clear even on throw — prevents leakage into the next request.
     setGlobal(null);
   }
 }

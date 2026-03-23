@@ -20,7 +20,7 @@ export { default as useRouter } from './use-router';
 export { useRequest } from './use-request';
 export type { RequestContext } from './use-request';
 
-export { normaliseHeaders, sanitiseHeaders } from './request-store';
+export { normaliseHeaders, sanitiseHeaders, getRequestStore } from './request-store';
 
 export { default as Link } from './Link';
 
