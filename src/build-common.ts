@@ -642,7 +642,8 @@ function buildWrapperAttrString(attrs: Record<string, any>): string {
     .map(([key, value]) => {
       if (key === 'className') key = 'class';
       if (key === 'style' && typeof value === 'object') {
-        const css = Object.entries(value as Record<string, any>)
+        // Always prepend display:contents so the wrapper span is invisible to layout.
+        const css = 'display:contents;' + Object.entries(value as Record<string, any>)
           .map(([p, val]) => \`\${p.replace(/[A-Z]/g, m => \`-\${m.toLowerCase()}\`)}:\${escapeHtml(String(val))}\`)
           .join(';');
         return \`style="\${css}"\`;
@@ -652,6 +653,8 @@ function buildWrapperAttrString(attrs: Record<string, any>): string {
       return \`\${key}="\${escapeHtml(String(value))}"\`;
     })
     .filter(Boolean);
+  // When no style prop was passed, still emit display:contents.
+  if (!('style' in attrs)) parts.push('style="display:contents"');
   return parts.length ? ' ' + parts.join(' ') : '';
 }
 
