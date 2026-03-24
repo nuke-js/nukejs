@@ -17,6 +17,7 @@ npm create nuke@latest
 - [Pages & Routing](#pages--routing)
 - [Layouts](#layouts)
 - [Client Components](#client-components)
+- [State Management](#state-management)
 - [API Routes](#api-routes)
 - [Middleware](#middleware)
 - [Static Files](#static-files)
@@ -292,7 +293,142 @@ Children and other React elements can be passed as props — NukeJS serializes t
 
 ---
 
-## API Routes
+## State Management
+
+NukeJS ships a lightweight built-in store for sharing state across client components. Because each `"use client"` component is hydrated into its own independent React root, React Context cannot cross component boundaries — the store solves this.
+
+All store state lives in `window.__nukeStores`, so it is shared across every bundle on the page regardless of how many times a store module is evaluated.
+
+### createStore
+
+```ts
+import { createStore } from 'nukejs';
+
+const counterStore = createStore('counter', { count: 0 });
+```
+
+The first argument is a unique name used to key the store in the global registry. The second is the initial state. If two bundles call `createStore` with the same name, the first one wins and subsequent calls reuse the existing entry.
+
+### useStore
+
+```tsx
+"use client"
+import { useStore } from 'nukejs';
+import { counterStore } from '../stores/counter';
+
+export default function Counter() {
+  const { count } = useStore(counterStore);
+  return (
+    <div>
+      <p>{count}</p>
+      <button onClick={() => counterStore.setState(s => ({ count: s.count + 1 }))}>
+        Increment
+      </button>
+    </div>
+  );
+}
+```
+
+Pass an optional selector to avoid re-renders when unrelated parts of state change:
+
+```tsx
+// Only re-renders when `count` changes, not on any other state update
+const count = useStore(counterStore, s => s.count);
+```
+
+### Sharing state across components
+
+Stores shine when two completely separate client components need to stay in sync. Define the store in its own file (no `"use client"` needed) and import it from both:
+
+```ts
+// app/stores/cart.ts
+import { createStore } from 'nukejs';
+
+export type CartItem = { id: string; name: string; price: number };
+
+export const cartStore = createStore('cart', {
+  items: [] as CartItem[],
+  total: 0,
+});
+```
+
+```tsx
+// app/components/AddToCartButton.tsx
+"use client"
+import { cartStore, type CartItem } from '../stores/cart';
+
+export default function AddToCartButton({ item }: { item: CartItem }) {
+  return (
+    <button onClick={() =>
+      cartStore.setState(s => ({
+        items: [...s.items, item],
+        total: s.total + item.price,
+      }))
+    }>
+      Add to cart
+    </button>
+  );
+}
+```
+
+```tsx
+// app/components/CartIcon.tsx
+"use client"
+import { useStore } from 'nukejs';
+import { cartStore } from '../stores/cart';
+
+export default function CartIcon() {
+  const { items, total } = useStore(cartStore);
+  return (
+    <span>
+      🛒 {items.length} items — ${total.toFixed(2)}
+    </span>
+  );
+}
+```
+
+```tsx
+// app/pages/shop.tsx — server component, no JS cost
+import AddToCartButton from '../components/AddToCartButton';
+import CartIcon from '../components/CartIcon';
+
+export default function ShopPage() {
+  const item = { id: '1', name: 'Widget', price: 9.99 };
+  return (
+    <div>
+      <CartIcon />
+      <AddToCartButton item={item} />
+    </div>
+  );
+}
+```
+
+`CartIcon` updates instantly when the button is clicked — they are separate React roots with separate bundles, but they write and read through the same `'cart'` entry in `window.__nukeStores`.
+
+### setState
+
+Accepts a full replacement value or an updater function:
+
+```ts
+// Replace
+cartStore.setState({ items: [], total: 0 });
+
+// Updater — receives current state, returns next state
+cartStore.setState(s => ({ ...s, total: s.total + 5 }));
+```
+
+### API reference
+
+| | Description |
+|---|---|
+| `createStore(name, initialState)` | Creates or retrieves a named store |
+| `useStore(store)` | Subscribes to the full state |
+| `useStore(store, selector)` | Subscribes to a derived slice (re-renders only when slice changes) |
+| `store.getState()` | Returns the current state snapshot |
+| `store.setState(updater)` | Updates state and notifies all subscribers |
+| `store.subscribe(listener)` | Registers a listener; returns an unsubscribe function |
+
+
 
 Export named HTTP method handlers from `.ts` files in your `server/` directory.
 
