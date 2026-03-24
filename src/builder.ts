@@ -77,6 +77,7 @@ const PUBLIC_STEMS = new Set([
   'request-store',
   'Link',
   'bundle',
+  'store',
   'utils',
   'logger',
 ]);

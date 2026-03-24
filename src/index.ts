@@ -1,3 +1,7 @@
+// ─── Client state management ────────────────────────────────────────────────
+export { createStore, useStore } from './store';
+export type { Store } from './store';
+
 // ─── Client-side hooks & components ────────────────────────────────────────
 export { useHtml } from './use-html';
 export type { HtmlOptions } from './use-html';
