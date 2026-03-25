@@ -42,8 +42,8 @@ export type MiddlewareFunction = (
 
 // ─── Internal state ───────────────────────────────────────────────────────────
 
-/** Ordered list of loaded middleware functions.  Populated by loadMiddleware(). */
-const middlewares: MiddlewareFunction[] = [];
+/** Ordered list of loaded middleware functions with their source paths. */
+const middlewares: { fn: MiddlewareFunction; src: string }[] = [];
 
 // ─── Loader helpers ───────────────────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ async function loadMiddlewareFromPath(middlewarePath: string): Promise<void> {
   try {
     const mod = await import(pathToFileURL(middlewarePath).href);
     if (typeof mod.default === 'function') {
-      middlewares.push(mod.default);
+      middlewares.push({ fn: mod.default, src: middlewarePath });
       log.info(`Middleware loaded from ${middlewarePath}`);
     } else {
       log.warn(`${middlewarePath} does not export a default function`);
@@ -117,11 +117,15 @@ export async function runMiddleware(
 ): Promise<boolean> {
   if (middlewares.length === 0) return false;
 
-  for (const middleware of middlewares) {
-    await middleware(req, res);
+  for (const { fn, src } of middlewares) {
+    await fn(req, res);
 
     if (res.writableEnded || res.headersSent) {
-      log.verbose('Middleware handled request, skipping further processing');
+      const method  = (req.method ?? 'GET').toUpperCase();
+      const url     = req.url ?? '/';
+      const status  = res.statusCode;
+      const srcName = path.basename(src);
+      log.verbose(`middleware  ${method} ${url}  ${status}  (${srcName})`);
       return true;
     }
   }

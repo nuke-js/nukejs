@@ -156,7 +156,7 @@ export async function serveReactBundle(res: ServerResponse): Promise<void> {
  * Minified because this script is loaded on every page request.
  */
 export async function serveNukeBundle(res: ServerResponse): Promise<void> {
-  log.verbose('Bundling nuke runtime');
+  log.verbose('Bundling NukeJS runtime');
 
   if (!nukeBundlePromise) {
     const dir = path.dirname(fileURLToPath(import.meta.url));
