@@ -31,7 +31,8 @@ import { watchDir, broadcastRestart } from './hmr';
 
 // ─── Environment ──────────────────────────────────────────────────────────────
 
-const isDev = process.env.ENVIRONMENT !== 'production';
+const isDev   = process.env.ENVIRONMENT !== 'production';
+const _startMs = Date.now();
 
 // React must live on globalThis so dynamically-imported page modules can share
 // the same React instance without each bundling their own copy.
@@ -178,44 +179,38 @@ function tryListen(port: number): Promise<number> {
 // ─── Startup banner ───────────────────────────────────────────────────────────
 
 /**
- * Renders the ☢️ NukeJS startup box to stdout.
- * Uses box-drawing characters and ANSI colour codes for a clean terminal UI.
+ * Prints a minimal, box-char-free startup banner to stdout.
+ * Compatible with CMD, PowerShell, and all ANSI-capable terminals.
  */
-function printStartupBanner(port: number, isDev: boolean): void {
-  const url        = `http://localhost:${port}`;
-  const level      = getDebugLevel();
-  const debugStr   = String(level);
-  const innerWidth = 42;
-  const line       = '─'.repeat(innerWidth);
+function printStartupBanner(port: number, configuredPort: number, startMs: number): void {
+  const url   = `http://localhost:${port}`;
+  const level = getDebugLevel();
+  const elapsed = Date.now() - startMs;
+  const keyW  = 5; // width of widest key label
 
-  /** Right-pads `text` to `width` columns, ignoring invisible ANSI sequences. */
-  const pad = (text: string, width: number) => {
-    const visibleLen = text.replace(/\x1b\[[0-9;]*m/g, '').length;
-    return text + ' '.repeat(Math.max(0, width - visibleLen));
+  /** Strips ANSI codes to measure visible length. */
+  const visible = (s: string) => s.replace(/\x1b\[[\d;]*m/g, '').length;
+
+  /** Prints one label/value row with aligned values. */
+  const row = (key: string, val: string) => {
+    const pad = ' '.repeat(Math.max(0, keyW - visible(key)));
+    console.log(`  ${c('gray', key)}${pad}  ${val}`);
   };
 
-  const row   = (content: string, w = 2) =>
-    `${ansi.gray}│${ansi.reset} ${pad(content, innerWidth - w)} ${ansi.gray}│${ansi.reset}`;
-  const label = (key: string, val: string) =>
-    row(`${c('gray', key)}  ${val}`);
-
   console.log('');
-  console.log(`${ansi.gray}┌${line}┐${ansi.reset}`);
-  console.log(row(`  ${c('red', '☢️        nukejs ', true)}`, 1));
-  console.log(`${ansi.gray}├${line}┤${ansi.reset}`);
-  console.log(label('  Local  ', c('cyan', url, true)));
-  console.log(`${ansi.gray}├${line}┤${ansi.reset}`);
-  console.log(label('  Pages  ', c('white', path.relative(process.cwd(), PAGES_DIR))));
-  console.log(label('  Server ', c('white', path.relative(process.cwd(), SERVER_DIR))));
-  console.log(label('  Dev    ', isDev ? c('green', 'yes') : c('gray', 'no')));
-  console.log(label('  Debug  ', level === false
-    ? c('gray', 'off')
-    : level === true
-      ? c('green', 'verbose')
-      : c('yellow', debugStr)));
-  console.log(`${ansi.gray}└${line}┘${ansi.reset}`);
+  console.log(`  ${c('orange', 'NukeJS', true)}  ${c('gray', `ready in ${elapsed}ms`)}`);
+  console.log('');
+  row('Local',
+    port !== configuredPort
+      ? `${c('cyan', url, true)}  ${c('yellow', `(${configuredPort} was in use)`)}`
+      : c('cyan', url, true),
+  );
+  row('Debug',
+    level === false ? c('gray',   'off')           :
+    level === true  ? c('green',  'verbose')       :
+                      c('yellow', String(level)));
   console.log('');
 }
 
 const actualPort = await tryListen(PORT);
-printStartupBanner(actualPort, isDev);
+printStartupBanner(actualPort, PORT, _startMs);
