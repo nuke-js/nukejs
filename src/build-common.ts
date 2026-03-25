@@ -834,7 +834,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   <script id="__n_data" type="application/json">\${runtimeData}</script>
 
-  <script type="importmap">
+  \${hydrated.size > 0 ? \`<script type="importmap">
   {
     "imports": {
       "react":             "/__n.js",
@@ -849,7 +849,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const { initRuntime } = await import('nukejs');
     const data = JSON.parse(document.getElementById('__n_data').textContent);
     await initRuntime(data);
-  </script>
+  </script>\` : ''}
 \${bodyScriptsHtml}</body>
 </html>\`;
 
