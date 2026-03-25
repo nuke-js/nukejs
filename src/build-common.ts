@@ -1095,16 +1095,19 @@ export async function buildCombinedBundle(staticDir: string): Promise<void> {
     stdin: {
       contents: `
 import React, {
+  createElement, cloneElement, createRef, isValidElement, Children,
   useState, useEffect, useContext, useReducer, useCallback, useMemo,
   useRef, useImperativeHandle, useLayoutEffect, useDebugValue,
   useDeferredValue, useTransition, useId, useSyncExternalStore,
   useInsertionEffect, createContext, forwardRef, memo, lazy,
-  Suspense, Fragment, StrictMode, Component, PureComponent
+  Suspense, Fragment, StrictMode, Component, PureComponent,
+  createPortal
 } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
 import { hydrateRoot, createRoot } from 'react-dom/client';
 export { initRuntime, setupLocationChangeMonitor } from './${bundleFile}';
 export {
+  createElement, cloneElement, createRef, isValidElement, Children,
   useState, useEffect, useContext, useReducer, useCallback, useMemo,
   useRef, useImperativeHandle, useLayoutEffect, useDebugValue,
   useDeferredValue, useTransition, useId, useSyncExternalStore,
