@@ -990,6 +990,8 @@ export async function bundleClientComponents(
       platform:    'browser',
       jsx:         'automatic',
       minify:      true,
+      conditions:  ['module', 'browser', 'import'],
+      banner:      { js: 'const require=(m)=>{if(m===\'react\')return window.__nukejs_react__;if(m===\'react/jsx-runtime\')return window.__nukejs_jsx__;throw new Error(\'Dynamic require of "\'+m+\'" is not supported\');};' },
       external:    ['react', 'react-dom/client', 'react/jsx-runtime'],
       define:      { 'process.env.NODE_ENV': '"production"' },
       write:       false,
@@ -1116,6 +1118,10 @@ export {
   hydrateRoot, createRoot, jsx, jsxs
 };
 export default React;
+// Expose React on window so CJS packages that call require('react')
+// at runtime can resolve it via the __nukejs_require__ shim.
+window.__nukejs_react__ = React;
+window.__nukejs_jsx__   = { jsx, jsxs };
 `,
       loader:     'ts',
       resolveDir: nukeDir,

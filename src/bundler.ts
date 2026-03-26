@@ -51,6 +51,12 @@ export async function bundleClientComponent(filePath: string): Promise<string> {
     platform: 'browser',
     write: false,
     jsx: 'automatic',
+    // Prefer ESM exports from dual-mode packages (e.g. radix-ui) to avoid
+    // CJS require() calls that break in an ESM context at runtime.
+    conditions: ['module', 'browser', 'import'],
+    // Shim require() for CJS-only packages that call require('react') at
+    // runtime. Resolves to the already-loaded React instance on window.
+    banner: { js: 'const require=(m)=>{if(m===\'react\')return window.__nukejs_react__;if(m===\'react/jsx-runtime\')return window.__nukejs_jsx__;throw new Error(\'Dynamic require of "\'+m+\'" is not supported\');};' },
     // Keep React external — resolved by the importmap to /__react.js
     external: ['react', 'react-dom/client', 'react/jsx-runtime'],
   });
@@ -124,6 +130,10 @@ export async function serveReactBundle(res: ServerResponse): Promise<void> {
           hydrateRoot, createRoot, jsx, jsxs
         };
         export default React;
+        // Expose React on window so CJS packages that call require('react')
+        // at runtime can resolve it via the __nukejs_require__ shim.
+        window.__nukejs_react__ = React;
+        window.__nukejs_jsx__   = { jsx, jsxs };
       `,
         loader: 'ts',
       },
@@ -167,7 +177,7 @@ export async function serveNukeBundle(res: ServerResponse): Promise<void> {
       format: 'esm',
       minify: true,
       bundle: true,
-      external: ['react', 'react-dom/client'],
+      external: ['react', 'react-dom/client', 'react/jsx-runtime'],
     }).then(r => r.outputFiles[0].text);
   }
 
