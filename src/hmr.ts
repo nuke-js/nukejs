@@ -38,6 +38,7 @@ import { existsSync, watch } from 'fs';
 import path from 'path';
 import { log } from './logger';
 import { invalidateComponentCache } from './component-analyzer';
+import { invalidateSplitBundle } from './bundler';
 
 // ─── SSE client registry ──────────────────────────────────────────────────────
 
@@ -164,7 +165,10 @@ export function watchDir(dir: string, label: string): void {
 
       // Evict this file from the component-analysis cache so the next SSR
       // render re-analyses it (catches "use client" or import graph changes).
+      // Also invalidate the split browser bundle so the next component request
+      // triggers a fresh build that picks up the changed file.
       if (dir) invalidateComponentCache(path.resolve(dir, filename));
+      invalidateSplitBundle();
 
       broadcastHmr(payload);
       pending.delete(filename);

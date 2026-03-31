@@ -964,8 +964,20 @@ export async function bundlePageHandler(opts: PageBundleOptions): Promise<string
 }
 
 /**
- * Bundles every client component in `globalRegistry` to
- * `<staticDir>/__client-component/<id>.js` and pre-renders each to HTML.
+ * Bundles all client components in `globalRegistry` to
+ * `<staticDir>/__client-component/` using esbuild code splitting so that
+ * shared dependencies (e.g. shadcn, radix-ui) are extracted into a single
+ * chunk file instead of being duplicated in every component bundle.
+ *
+ * Output layout:
+ *   __client-component/
+ *     cc_abc123.js        ← component entry (tiny, just re-exports)
+ *     cc_def456.js        ← component entry
+ *     __chunks/HASH.js    ← shared chunk (radix-ui, clsx, etc.)
+ *
+ * The browser's native ESM resolver handles the chunk imports automatically —
+ * no runtime changes needed.  The chunk is fetched once and cached by the
+ * browser, regardless of how many components import it.
  */
 export async function bundleClientComponents(
   globalRegistry: Map<string, string>,
@@ -977,28 +989,41 @@ export async function bundleClientComponents(
   const outDir = path.join(staticDir, '__client-component');
   fs.mkdirSync(outDir, { recursive: true });
 
+  // ── Pass 1: single split browser build for all components ────────────────
+  // esbuild extracts any module imported by 2+ entry points into a shared
+  // chunk, so radix-ui / shadcn / etc. are bundled exactly once.
+  const entryPoints: Record<string, string> = {};
+  for (const [id, filePath] of globalRegistry) {
+    entryPoints[id] = filePath;
+    console.log(`  bundling  client  ${id}  (${path.relative(pagesDir, filePath)})`);
+  }
+
+  await build({
+    entryPoints,
+    bundle:      true,
+    splitting:   true,            // ← shared deps extracted into chunks
+    format:      'esm',           // splitting requires ESM
+    platform:    'browser',
+    jsx:         'automatic',
+    minify:      true,
+    write:       true,            // splitting requires write:true + outdir
+    outdir:      outDir,
+    conditions:  ['module', 'browser', 'import'],
+    banner:      { js: 'const require=(m)=>{if(m===\'react\')return window.__nukejs_react__;if(m===\'react/jsx-runtime\')return window.__nukejs_jsx__;throw new Error(\'Dynamic require of "\'+m+\'" is not supported\');};' },
+    external:    ['react', 'react-dom/client', 'react/jsx-runtime'],
+    define:      { 'process.env.NODE_ENV': '"production"' },
+    entryNames:  '[name]',        // cc_abc123.js (no hash on entries)
+    chunkNames:  '__chunks/[hash]', // __chunks/ABCDEF.js
+  });
+
+  console.log(`  bundled   ${globalRegistry.size} client component(s) → ${path.relative(process.cwd(), outDir)}/`);
+
+  // ── Pass 2: SSR pre-render each component individually ───────────────────
+  // Code splitting is a browser-only concern; SSR bundles are still built
+  // per-component for Node (packages: 'external', no splitting needed).
   const prerendered = new Map<string, string>();
 
   for (const [id, filePath] of globalRegistry) {
-    console.log(`  bundling  client  ${id}  (${path.relative(pagesDir, filePath)})`);
-
-    // Browser bundle — served to the client for hydration
-    const browserResult = await build({
-      entryPoints: [filePath],
-      bundle:      true,
-      format:      'esm',
-      platform:    'browser',
-      jsx:         'automatic',
-      minify:      true,
-      conditions:  ['module', 'browser', 'import'],
-      banner:      { js: 'const require=(m)=>{if(m===\'react\')return window.__nukejs_react__;if(m===\'react/jsx-runtime\')return window.__nukejs_jsx__;throw new Error(\'Dynamic require of "\'+m+\'" is not supported\');};' },
-      external:    ['react', 'react-dom/client', 'react/jsx-runtime'],
-      define:      { 'process.env.NODE_ENV': '"production"' },
-      write:       false,
-    });
-    fs.writeFileSync(path.join(outDir, `${id}.js`), browserResult.outputFiles[0].text);
-
-    // SSR pre-render — bundle for Node, import, renderToString, discard
     const ssrTmp = path.join(
       path.dirname(filePath),
       `_ssr_${id}_${randomBytes(4).toString('hex')}.mjs`,
@@ -1030,7 +1055,6 @@ export async function bundleClientComponents(
     }
   }
 
-  console.log(`  bundled   ${globalRegistry.size} client component(s) → ${path.relative(process.cwd(), outDir)}/`);
   return prerendered;
 }
 
