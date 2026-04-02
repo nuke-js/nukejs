@@ -17,9 +17,16 @@
  *   export default function(req, res) { … }  // matches any method
  *
  * Request augmentation:
- *   req.body    — parsed JSON or raw string (10 MB limit)
- *   req.params  — dynamic route segments (e.g. { id: '42' })
- *   req.query   — URL search params
+ *   req.json()   — parse body as JSON (10 MB limit, prototype-pollution guard)
+ *   req.text()   — read body as a UTF-8 string (10 MB limit)
+ *   req.buffer() — read body as a raw Buffer (10 MB limit)
+ *   req.params   — dynamic route segments (e.g. { id: '42' })
+ *   req.query    — URL search params
+ *
+ *   For multipart/form-data (file uploads) pipe req directly into a parser:
+ *     import busboy from 'busboy';
+ *     const bb = busboy({ headers: req.headers });
+ *     req.pipe(bb);
  *
  * Response augmentation:
  *   res.json(data, status?)  — JSON response shorthand
@@ -45,11 +52,16 @@ export interface ApiPrefixInfo {
   filePath?: string;
 }
 
-/** Node's IncomingMessage with parsed body, params, and query. */
+/** Node's IncomingMessage with body helpers, params, and query. */
 export interface ApiRequest extends IncomingMessage {
   params?: Record<string, string | string[]>;
   query?: Record<string, string>;
-  body?: any;
+  /** Parse the request body as JSON. Rejects if the body exceeds 10 MB or is not valid JSON. */
+  json<T = any>(): Promise<T>;
+  /** Read the request body as a UTF-8 string. Rejects if the body exceeds 10 MB. */
+  text(): Promise<string>;
+  /** Read the request body as a raw Buffer. Rejects if the body exceeds 10 MB. */
+  buffer(): Promise<Buffer>;
 }
 
 /** Node's ServerResponse with json() and status() convenience methods. */
@@ -121,53 +133,71 @@ export function discoverApiPrefixes(serverDir: string): ApiPrefixInfo[] {
   return prefixes;
 }
 
-// ─── Body parsing ─────────────────────────────────────────────────────────────
+// ─── Request enhancement ──────────────────────────────────────────────────────
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
 /**
- * Buffers the request body and returns:
- *   - Parsed JSON object if Content-Type is application/json.
- *   - Raw string otherwise.
- *
- * Rejects with an error if the body exceeds MAX_BODY_BYTES to prevent
- * memory exhaustion attacks.  Deletes __proto__ and constructor from parsed
- * JSON objects to guard against prototype pollution.
+ * Collects the raw request body into a Buffer, enforcing MAX_BODY_BYTES.
+ * All higher-level helpers (json, text) are built on top of this.
  */
-export async function parseBody(req: IncomingMessage): Promise<any> {
+function collectBuffer(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    let body = '';
+    const chunks: Buffer[] = [];
     let bytes = 0;
 
-    req.on('data', chunk => {
+    req.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > MAX_BODY_BYTES) {
         req.destroy();
         return reject(new Error('Request body too large'));
       }
-      body += chunk.toString();
+      chunks.push(chunk);
     });
 
-    req.on('end', () => {
-      try {
-        if (body && req.headers['content-type']?.includes('application/json')) {
-          const parsed = JSON.parse(body);
-          // Guard against prototype pollution via __proto__ / constructor.
-          if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            delete parsed.__proto__;
-            delete parsed.constructor;
-          }
-          resolve(parsed);
-        } else {
-          resolve(body);
-        }
-      } catch (err) {
-        reject(err);
-      }
-    });
-
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+/**
+ * Attaches lazy body-reading helpers to the request object.
+ * Nothing is read from the stream until the handler calls one of them.
+ *
+ *   req.json()   — parse body as JSON (prototype-pollution guard included)
+ *   req.text()   — body as a UTF-8 string
+ *   req.buffer() — body as a raw Buffer (safe for binary / multipart)
+ *
+ * For multipart/form-data, skip these helpers entirely and pipe req into
+ * a dedicated parser (busboy, formidable, etc.) — the stream is untouched.
+ */
+export function enhanceRequest(req: IncomingMessage): ApiRequest {
+  const apiReq = req as ApiRequest;
+
+  // Memoize: the stream can only be consumed once, so cache the Buffer
+  // Promise and re-use it across multiple calls to json/text/buffer.
+  let bufferPromise: Promise<Buffer> | null = null;
+  const getBuffer = () => {
+    if (!bufferPromise) bufferPromise = collectBuffer(req);
+    return bufferPromise;
+  };
+
+  apiReq.buffer = () => getBuffer();
+
+  apiReq.text = () => getBuffer().then(buf => buf.toString('utf8'));
+
+  apiReq.json = () =>
+    getBuffer().then(buf => {
+      const parsed = JSON.parse(buf.toString('utf8'));
+      // Guard against prototype pollution via __proto__ / constructor.
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        delete parsed.__proto__;
+        delete parsed.constructor;
+      }
+      return parsed;
+    });
+
+  return apiReq;
 }
 
 // ─── Query parsing ────────────────────────────────────────────────────────────
@@ -314,9 +344,8 @@ export function createApiHandler({ apiPrefixes, port, isDev }: ApiHandlerOptions
       // OPTIONS preflight — respond immediately with CORS headers.
       if (method === 'OPTIONS') { respondOptions(apiRes); return; }
 
-      // Augment the request object with parsed body, params, and query.
-      const apiReq = req as ApiRequest;
-      apiReq.body = await parseBody(req);
+      // Augment the request object with body helpers, params, and query.
+      const apiReq = enhanceRequest(req);
       apiReq.params = params;
       apiReq.query = parseQuery(url, port);
 

@@ -405,7 +405,9 @@ export function makeApiAdapterSource(handlerFilename: string): string {
 import type { IncomingMessage, ServerResponse } from 'http';
 import * as mod from ${JSON.stringify('./' + handlerFilename)};
 
-function enhance(res: ServerResponse) {
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+
+function enhanceRes(res: ServerResponse) {
   (res as any).json = function (data: any, status = 200) {
     this.statusCode = status;
     this.setHeader('Content-Type', 'application/json');
@@ -415,26 +417,46 @@ function enhance(res: ServerResponse) {
   return res;
 }
 
-async function parseBody(req: IncomingMessage): Promise<any> {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', chunk => { body += chunk.toString(); });
-    req.on('end', () => {
-      try {
-        resolve(body && req.headers['content-type']?.includes('application/json')
-          ? JSON.parse(body) : body);
-      } catch (e) { reject(e); }
-    });
-    req.on('error', reject);
+function enhanceReq(req: IncomingMessage) {
+  const apiReq = req as any;
+  let bufferPromise: Promise<Buffer> | null = null;
+
+  const getBuffer = (): Promise<Buffer> => {
+    if (!bufferPromise) {
+      bufferPromise = new Promise((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        req.on('data', (chunk: Buffer) => {
+          bytes += chunk.length;
+          if (bytes > MAX_BODY_BYTES) { req.destroy(); return reject(new Error('Request body too large')); }
+          chunks.push(chunk);
+        });
+        req.on('end', () => resolve(Buffer.concat(chunks)));
+        req.on('error', reject);
+      });
+    }
+    return bufferPromise;
+  };
+
+  apiReq.buffer = () => getBuffer();
+  apiReq.text   = () => getBuffer().then(buf => buf.toString('utf8'));
+  apiReq.json   = () => getBuffer().then(buf => {
+    const parsed = JSON.parse(buf.toString('utf8'));
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      delete parsed.__proto__;
+      delete parsed.constructor;
+    }
+    return parsed;
   });
+
+  return apiReq;
 }
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   const method = (req.method || 'GET').toUpperCase();
-  const apiRes = enhance(res);
-  const apiReq = req as any;
+  const apiRes = enhanceRes(res);
+  const apiReq = enhanceReq(req);
 
-  apiReq.body   = await parseBody(req);
   // In production, route dynamic segments are injected as query-string keys by
   // the server entry, so params and query share the same parsed URL values.
   const qs = Object.fromEntries(new URL(req.url || '/', 'http://localhost').searchParams);
