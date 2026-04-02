@@ -442,7 +442,8 @@ export async function GET(req: ApiRequest, res: ApiResponse) {
 }
 
 export async function POST(req: ApiRequest, res: ApiResponse) {
-  const user = await db.createUser(req.body);
+  const body = await req.json();
+  const user = await db.createUser(body);
   res.json(user, 201);
 }
 ```
@@ -464,13 +465,22 @@ export async function DELETE(req: ApiRequest, res: ApiResponse) {
 
 ### Request object
 
-| Property | Type | Description |
+| Property / Method | Type | Description |
 |---|---|---|
-| `req.body` | `any` | Parsed JSON body (or raw string), up to 10 MB |
+| `req.json<T>()` | `Promise<T>` | Parse the request body as JSON (10 MB limit, prototype-pollution guard) |
+| `req.text()` | `Promise<string>` | Read the request body as a UTF-8 string (10 MB limit) |
+| `req.buffer()` | `Promise<Buffer>` | Read the request body as a raw `Buffer` — use this for binary or multipart data |
 | `req.params` | `Record<string, string \| string[]>` | Dynamic route segments |
 | `req.query` | `Record<string, string>` | URL search params |
 | `req.method` | `string` | HTTP method |
 | `req.headers` | `IncomingHttpHeaders` | Request headers |
+
+> **Multipart / file uploads:** body helpers do not parse `multipart/form-data`. Pipe `req` directly into a multipart parser instead:
+> ```ts
+> import busboy from 'busboy';
+> const bb = busboy({ headers: req.headers });
+> req.pipe(bb);
+> ```
 
 ### Response object
 
