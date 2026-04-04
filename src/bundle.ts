@@ -324,12 +324,18 @@ function headBlock(head: HTMLHeadElement): { nodes: Element[]; closeComment: Com
   return { nodes, closeComment };
 }
 
-/** Stable key for an Element: tag name + sorted attribute list (name=value pairs). */
+/** Stable key for an Element: tag name + sorted attribute list (name=value pairs).
+ *  For <style> tags the CSS text content is included so that two style tags with
+ *  identical attributes but different content are never treated as the same node
+ *  (which would cause useHtml style updates to be silently dropped on HMR).
+ */
 function fingerprint(el: Element): string {
-  return el.tagName + '|' + Array.from(el.attributes)
+  const attrPart = Array.from(el.attributes)
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(a => `${a.name}=${a.value}`)
     .join('&');
+  const contentPart = el.tagName === 'STYLE' ? (el.textContent ?? '') : '';
+  return el.tagName + '|' + attrPart + (contentPart ? '|' + contentPart : '');
 }
 
 /**
