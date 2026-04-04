@@ -634,6 +634,19 @@ function renderStyleTag(tag: any): string {
   return \`  <style\${media}>\${tag.content ?? ''}</style>\`;
 }
 
+// ─── HTML minifier ────────────────────────────────────────────────────────────
+// Minifies the final HTML string before sending it to the client.
+// Sentinel comments (<!--n-head-->, <!--/n-head-->, <!--n-body-scripts-->,
+// <!--/n-body-scripts-->) are preserved — the client runtime needs them for
+// head diffing during soft navigation.
+function minifyHtml(h: string): string {
+  return h
+    .replace(/<!--(?!(n-head|\\/n-head|n-body-scripts|\\/n-body-scripts))[\\s\\S]*?-->/g, '')
+    .replace(/>\\s+</g, '><')
+    .replace(/\\s*\\n\\s*/g, '')
+    .trim();
+}
+
 // ─── Renderer ─────────────────────────────────────────────────────────────────
 const VOID_TAGS = new Set([
   'area','base','br','col','embed','hr','img','input',
@@ -877,7 +890,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     res.statusCode = ${statusCode};
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.end(html);
+    res.end(minifyHtml(html));
   } catch (err: any) {
     // Re-throw so the server entry (build-node / build-vercel) can route to
     // the _500 page handler. Do not swallow the error here.
