@@ -642,7 +642,7 @@ function renderStyleTag(tag: any): string {
 function minifyHtml(h: string): string {
   return h
     .replace(/<!--(?!(n-head|\\/n-head|n-body-scripts|\\/n-body-scripts))[\\s\\S]*?-->/g, '')
-    .replace(/>\\s+</g, '><')
+    .replace(/>\\s+</g, '> <')
     .replace(/\\s*\\n\\s*/g, '')
     .trim();
 }
