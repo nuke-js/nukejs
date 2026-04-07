@@ -106,21 +106,60 @@ if (!arg || arg === 'dev') {
   runWithTsx(devScript, { ENVIRONMENT: 'development' });
 
 } else if (arg === 'build') {
-  // nuke build  →  run compiled dist via plain node
+  // nuke build [--cloudflare|--vercel]  →  run the appropriate compiled build script.
+  //
+  // Target selection order:
+  //   1. --cloudflare / --vercel flag  (explicit CLI override)
+  //   2. package.json "nuke": { "target": "cloudflare"|"vercel" }  (project config)
+  //   3. CF_PAGES / CLOUDFLARE_WORKERS env vars  (Cloudflare Pages CI)
+  //   4. VERCEL / VERCEL_ENV / NOW_BUILDER env vars  (Vercel CI)
+  //   5. Default: Node.js build
+
+  const extraArgs = process.argv.slice(3);
+
+  let pkgTarget = null;
+  try {
+    const pkgPath = path.join(process.cwd(), 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      pkgTarget = pkg?.nuke?.target ?? null;
+    }
+  } catch { /* malformed package.json — ignore, fall through */ }
+
+  const isCloudflare = !!(
+    extraArgs.includes('--cloudflare') ||
+    pkgTarget === 'cloudflare' ||
+    process.env.CLOUDFLARE_ACCOUNT_ID ||   // injected by all Cloudflare CI (Workers + Pages)
+    process.env.CLOUDFLARE_API_TOKEN ||    // injected by all Cloudflare CI
+    process.env.WORKERS_CI ||             // Cloudflare Workers CI
+    process.env.CF_PAGES ||
+    process.env.CF_PAGES_BRANCH ||
+    process.env.CF_PAGES_COMMIT_SHA ||
+    process.env.CF_PAGES_URL ||
+    process.env.CLOUDFLARE_WORKERS
+  );
+
   const isVercel = !!(
+    extraArgs.includes('--vercel') ||
+    pkgTarget === 'vercel' ||
     process.env.VERCEL ||
     process.env.VERCEL_ENV ||
     process.env.NOW_BUILDER
   );
 
-  if (isVercel) {
-    runWithNode(path.join(distDir, 'build-vercel.js'));
+  // Resolve the target once so the spawned build script can read it too.
+  const nukeTarget = isCloudflare ? 'cloudflare' : isVercel ? 'vercel' : 'node';
+
+  if (isCloudflare) {
+    runWithNode(path.join(distDir, 'build-cloudflare.js'), { NUKE_TARGET: nukeTarget });
+  } else if (isVercel) {
+    runWithNode(path.join(distDir, 'build-vercel.js'), { NUKE_TARGET: nukeTarget });
   } else {
-    runWithNode(path.join(distDir, 'build-node.js'));
+    runWithNode(path.join(distDir, 'build-node.js'), { NUKE_TARGET: nukeTarget });
   }
 
 } else {
   console.error(`\n  ✖  Unknown command: "${arg}"`);
-  console.error(`     Usage:  nuke [dev|build]\n`);
+  console.error(`     Usage:  nuke [dev|build [--cloudflare|--vercel]]\n`);
   process.exit(1);
 }

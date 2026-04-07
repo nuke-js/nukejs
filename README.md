@@ -40,7 +40,7 @@ NukeJS gives you:
 | **SPA navigation** | Client-side page transitions after first load |
 | **Hot module replacement** | Instant page updates during development |
 | **Zero config** | Works out of the box; `nuke.config.ts` for overrides |
-| **Deploy anywhere** | Node.js or Vercel serverless |
+| **Deploy anywhere** | Node.js, Vercel, or Cloudflare — zero config |
 
 ### The core idea
 
@@ -560,8 +560,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 | `nuke dev` | Served by the built-in middleware before any API or SSR routing |
 | `nuke build` (Node) | Copied to `dist/static/` and served by the production HTTP server |
 | `nuke build` (Vercel) | Copied to `.vercel/output/static/` — served by Vercel's CDN, no function invocation |
-
-On Vercel, public files receive the same zero-latency CDN treatment as `__n.js`.
+| `nuke build` (Cloudflare) | Copied to `.cloudflare/output/static/` — served by Cloudflare's CDN, no Worker invocation |
 
 ---
 
@@ -1032,7 +1031,28 @@ dist/
 
 ### Vercel
 
-Just import the code from GitHub.
+Just import the code from GitHub. NukeJS detects the Vercel environment automatically and builds the right output — no configuration needed.
+
+### Cloudflare Workers & Pages
+
+Just import the code from GitHub. NukeJS detects the Cloudflare environment automatically and builds the right output — no configuration needed.
+
+The build output goes to `.cloudflare/output/`:
+
+```
+.cloudflare/output/
+├── _worker.mjs     # Single ESM Cloudflare Worker (all routes bundled)
+└── static/
+    ├── __n.js                  # NukeJS client runtime
+    ├── __client-component/     # Bundled "use client" component files
+    └── <app/public files>      # Copied from app/public/ at build time
+```
+
+Static files in `static/` are served directly by Cloudflare's CDN — the Worker is only invoked for pages and API routes.
+
+> **Cloudflare Pages (recommended):** Set your build output directory to `.cloudflare/output` in the Pages dashboard. Static assets are served via CDN automatically through the `ASSETS` binding.
+
+> **Cloudflare Workers:** Use `wrangler deploy` as your deploy command. Static assets are inlined into the worker bundle at build time — no separate CDN step required.
 
 ### Environment variables
 
