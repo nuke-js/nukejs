@@ -15,6 +15,7 @@
 
 import fs   from 'fs';
 import path from 'path';
+import { build } from 'esbuild';
 
 import { loadConfig } from './config';
 import {
@@ -72,6 +73,27 @@ const manifest: ManifestEntry[] = [];
 /** Converts a funcPath like '/api/users/[id]' to a filename 'users/[id].mjs'. */
 function funcPathToFilename(funcPath: string, prefix: 'api' | 'page'): string {
   return funcPath.replace(new RegExp(`^\\/${prefix}\\/`), '') + '.mjs';
+}
+
+// ─── Middleware ───────────────────────────────────────────────────────────────
+
+// If the user has a middleware.ts at the project root, compile it to
+// dist/middleware.mjs so the production server can import it at startup.
+const userMiddlewareSrc = path.resolve('middleware.ts');
+const hasUserMiddleware = fs.existsSync(userMiddlewareSrc);
+
+if (hasUserMiddleware) {
+  const result = await build({
+    entryPoints: [userMiddlewareSrc],
+    bundle:      true,
+    format:      'esm',
+    platform:    'node',
+    target:      'node20',
+    packages:    'external',
+    write:       false,
+  });
+  fs.writeFileSync(path.join(OUT_DIR, 'middleware.mjs'), result.outputFiles[0].text);
+  console.log('  built     middleware.ts  →  dist/middleware.mjs');
 }
 
 // ─── API routes ───────────────────────────────────────────────────────────────
@@ -176,7 +198,44 @@ const compiled   = routes.map(r => ({ ...r, regex: new RegExp(r.srcRegex) }));
 const STATIC_DIR = path.join(__dirname, 'static');
 const MIME_MAP   = { ${MIME_MAP_ENTRIES} };
 
+// ── Middleware ──────────────────────────────────────────────────────────────
+// Load user middleware (compiled from middleware.ts at build time) once at
+// startup.  The variable stays null if no middleware was built.
+let __middleware__ = null;
+{
+  const mwPath = path.join(__dirname, 'middleware.mjs');
+  if (fs.existsSync(mwPath)) {
+    try {
+      const mod = await import(pathToFileURL(mwPath).href);
+      if (typeof mod.default === 'function') {
+        __middleware__ = mod.default;
+        console.log('nukejs: middleware loaded');
+      } else {
+        console.warn('nukejs: middleware.mjs does not export a default function, skipping');
+      }
+    } catch(e) { console.error('[middleware load error]', e); }
+  }
+}
+
 const server = http.createServer(async (req, res) => {
+  // 0. User middleware — runs before every request (static files included).
+  //    May mutate req.url (e.g. locale rewrites) — read it AFTER this runs.
+  //    If it ends the response, skip all framework handling.
+  if (__middleware__) {
+    try {
+      await __middleware__(req, res);
+      if (res.writableEnded || res.headersSent) return;
+    } catch(e) {
+      console.error('[middleware error]', e);
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'text/plain');
+        res.end('Internal Server Error');
+      }
+      return;
+    }
+  }
+
   const url   = req.url || '/';
   const clean = url.split('?')[0];
 

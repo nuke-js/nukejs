@@ -111,7 +111,20 @@ function emitVercelFunction(name: string, bundleText: string): void {
  */
 function makeApiDispatcherSource(
   routes: Array<{ absPath: string; srcRegex: string; paramNames: string[] }>,
+  middlewarePath?: string,
 ): string {
+  const middlewareImport = middlewarePath
+    ? `import __userMiddleware__ from ${JSON.stringify(middlewarePath)};`
+    : '';
+
+  const middlewareRun = middlewarePath
+    ? `
+  // Run user middleware before routing.  If it ends the response, bail out.
+  await __userMiddleware__(req, res);
+  if ((res as any).writableEnded || (res as any).headersSent) return;
+`
+    : '';
+
   const imports = routes
     .map((r, i) => `import * as __api_${i}__ from ${JSON.stringify(r.absPath)};`)
     .join('\n');
@@ -125,6 +138,7 @@ function makeApiDispatcherSource(
   return `\
 import type { IncomingMessage, ServerResponse } from 'http';
 ${imports}
+${middlewareImport}
 
 function enhance(res: ServerResponse) {
   (res as any).json = function(data: any, status = 200) {
@@ -158,6 +172,7 @@ ${routeEntries}
 ];
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
+${middlewareRun}
   const url      = new URL(req.url || '/', 'http://localhost');
   const pathname = url.pathname;
 
@@ -206,7 +221,20 @@ function makePagesDispatcherSource(
     catchAllNames: string[];
   }>,
   errorAdapters: { adapter404?: string; adapter500?: string } = {},
+  middlewarePath?: string,
 ): string {
+  const middlewareImport = middlewarePath
+    ? `import __userMiddleware__ from ${JSON.stringify(middlewarePath)};`
+    : '';
+
+  const middlewareRun = middlewarePath
+    ? `
+  // Run user middleware before routing.  If it ends the response, bail out.
+  await __userMiddleware__(req, res);
+  if ((res as any).writableEnded || (res as any).headersSent) return;
+`
+    : '';
+
   const imports = routes
     .map((r, i) => `import __page_${i}__ from ${JSON.stringify(r.adapterPath)};`)
     .join('\n');
@@ -258,6 +286,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 ${imports}
 ${error404Import}
 ${error500Import}
+${middlewareImport}
 
 const ROUTES: Array<{
   regex:    string;
@@ -269,6 +298,7 @@ ${routeEntries}
 ];
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
+${middlewareRun}
   const url      = new URL(req.url || '/', 'http://localhost');
   const pathname = url.pathname;
 
@@ -306,6 +336,14 @@ ${notFoundHandler}
 `;
 }
 
+// ─── Middleware ───────────────────────────────────────────────────────────────
+
+// Resolve user middleware (if present) once so both function bundles can
+// import it.  The .ts source is bundled by esbuild as part of each dispatcher.
+const userMiddlewareSrc  = path.resolve('middleware.ts');
+const vercelMiddlewarePath = fs.existsSync(userMiddlewareSrc) ? userMiddlewareSrc : undefined;
+if (vercelMiddlewarePath) console.log('  found     middleware.ts  (will be bundled into functions)');
+
 // ─── Build API function ───────────────────────────────────────────────────────
 
 const vercelRoutes: VercelRoute[] = [];
@@ -319,7 +357,7 @@ const apiRoutes = apiFiles
 
 if (apiRoutes.length > 0) {
   const dispatcherPath = path.join(SERVER_DIR, `_api_dispatcher_${randomBytes(4).toString('hex')}.ts`);
-  fs.writeFileSync(dispatcherPath, makeApiDispatcherSource(apiRoutes));
+  fs.writeFileSync(dispatcherPath, makeApiDispatcherSource(apiRoutes, vercelMiddlewarePath));
 
   try {
     const result = await build({
@@ -437,7 +475,7 @@ if (serverPages.length > 0 || hasErrorPages) {
   }
 
   const dispatcherPath = path.join(PAGES_DIR, `_pages_dispatcher_${randomBytes(4).toString('hex')}.ts`);
-  fs.writeFileSync(dispatcherPath, makePagesDispatcherSource(dispatcherRoutes, errorAdapters));
+  fs.writeFileSync(dispatcherPath, makePagesDispatcherSource(dispatcherRoutes, errorAdapters, vercelMiddlewarePath));
 
   try {
     const result = await build({

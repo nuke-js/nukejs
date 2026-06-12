@@ -93,7 +93,15 @@ export async function loadMiddleware(): Promise<void> {
     `middleware.${appDir.endsWith('dist') ? 'js' : 'ts'}`,
   );
 
-  const userPath = path.join(process.cwd(), 'middleware.ts');
+  // In dev the user's file is .ts; after any build it's compiled to .js or
+  // .mjs.  Try all variants and load the first one that exists so production
+  // builds (where .ts no longer exists on disk) are handled correctly.
+  const userCandidates = [
+    path.join(process.cwd(), 'middleware.ts'),
+    path.join(process.cwd(), 'middleware.js'),
+    path.join(process.cwd(), 'middleware.mjs'),
+  ];
+  const userPath = userCandidates.find(p => fs.existsSync(p)) ?? userCandidates[0];
 
   // Deduplicate in case the two paths resolve to the same file.
   const paths = [...new Set([builtinPath, userPath])];

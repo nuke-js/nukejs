@@ -226,7 +226,20 @@ class __NodeResponse__ {
  */
 function makeApiDispatcherSource(
   routes: Array<{ absPath: string; srcRegex: string; paramNames: string[] }>,
+  middlewarePath?: string,
 ): string {
+  const middlewareImport = middlewarePath
+    ? `import __userMiddleware__ from ${JSON.stringify(middlewarePath)};`
+    : '';
+
+  const middlewareRun = middlewarePath
+    ? `
+  // Run user middleware before routing.  If it ends the response, bail out.
+  await __userMiddleware__(req, res);
+  if ((res as any).writableEnded || (res as any).headersSent) return true;
+`
+    : '';
+
   const imports = routes
     .map((r, i) => `import * as __api_${i}__ from ${JSON.stringify(r.absPath)};`)
     .join('\n');
@@ -241,6 +254,7 @@ function makeApiDispatcherSource(
   return /* ts */`\
 import type { IncomingMessage, ServerResponse } from 'http';
 ${imports}
+${middlewareImport}
 
 const __CF_API_ROUTES__ = [
 ${routeEntries}
@@ -253,7 +267,7 @@ ${routeEntries}
 export async function __dispatchApi__(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const url      = new URL((req as any).url || '/', 'http://localhost');
   const pathname = url.pathname;
-
+${middlewareRun}
   for (const route of __CF_API_ROUTES__) {
     const m = pathname.match(new RegExp(route.regex));
     if (!m) continue;
@@ -308,7 +322,20 @@ function makePagesDispatcherSource(
     catchAllNames: string[];
   }>,
   errorAdapters: { adapter404?: string; adapter500?: string } = {},
+  middlewarePath?: string,
 ): string {
+  const middlewareImport = middlewarePath
+    ? `import __userMiddleware__ from ${JSON.stringify(middlewarePath)};`
+    : '';
+
+  const middlewareRun = middlewarePath
+    ? `
+  // Run user middleware before routing.  If it ends the response, bail out.
+  await __userMiddleware__(req, res);
+  if ((res as any).writableEnded || (res as any).headersSent) return true;
+`
+    : '';
+
   const imports = routes
     .map((r, i) => `import __page_${i}__ from ${JSON.stringify(r.adapterPath)};`)
     .join('\n');
@@ -361,6 +388,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 ${imports}
 ${error404Import}
 ${error500Import}
+${middlewareImport}
 
 const __CF_PAGE_ROUTES__: Array<{
   regex:    string;
@@ -378,7 +406,7 @@ ${routeEntries}
 export async function __dispatchPages__(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const url      = new URL((req as any).url || '/', 'http://localhost');
   const pathname = url.pathname;
-
+${middlewareRun}
   // Client-side error — forward to _500 page if available.
   if (url.searchParams.has('__clientError')) {
 ${clientErrHandler}
@@ -427,12 +455,26 @@ ${notFoundFallback}
  *   4. Checks the Cloudflare Pages ASSETS binding for static files first.
  *   5. Dispatches dynamic requests through the API then the pages pipeline.
  */
-function makeWorkerEntrySource(hasApi: boolean, hasPages: boolean, inlineStaticMap: string): string {
+function makeWorkerEntrySource(hasApi: boolean, hasPages: boolean, inlineStaticMap: string, middlewarePath?: string): string {
   const apiImport   = hasApi
     ? `import { __dispatchApi__   } from './cf-api-dispatcher';`
     : '';
   const pagesImport = hasPages
     ? `import { __dispatchPages__ } from './cf-pages-dispatcher';`
+    : '';
+
+  const middlewareImport = middlewarePath
+    ? `import __userMiddleware__ from ${JSON.stringify(middlewarePath)};`
+    : '';
+
+  // Runs once per request, before any routing.  Mutates nodeReq.url in place
+  // (e.g. locale-prefix rewrites) so both dispatchers see the rewritten URL.
+  // If middleware ends the response, return immediately.
+  const middlewareRun = middlewarePath
+    ? `
+      await __userMiddleware__(nodeReq as any, nodeRes as any);
+      if ((nodeRes as any).writableEnded || (nodeRes as any).headersSent) return nodeRes.toResponse();
+`
     : '';
 
   const apiDispatch = hasApi
@@ -447,6 +489,7 @@ ${NODE_SHIM}
 
 ${apiImport}
 ${pagesImport}
+${middlewareImport}
 
 /**
  * Pre-buffer the request body into a Uint8Array so we can both:
@@ -539,6 +582,8 @@ export default {
     const nodeRes         = new ((__NodeResponse__ as any))();
 
     try {
+      // ── User middleware — runs once, before any routing ─────────────────
+${middlewareRun}
       // ── 4. API routes ──────────────────────────────────────────────────
       ${apiDispatch}
 
@@ -668,6 +713,14 @@ function walkStaticDir(dir: string, base: string = dir): Array<{ rel: string; ab
   }
   return results;
 }
+
+// ─── Middleware ───────────────────────────────────────────────────────────────
+
+// Resolve user middleware once; pass it to both dispatcher generators so it
+// gets bundled into the single CF worker.
+const cfUserMiddlewareSrc  = path.resolve('middleware.ts');
+const cfMiddlewarePath     = fs.existsSync(cfUserMiddlewareSrc) ? cfUserMiddlewareSrc : undefined;
+if (cfMiddlewarePath) console.log('  found     middleware.ts  (will be bundled into worker)');
 
 // ─── Bundle API dispatcher ────────────────────────────────────────────────────
 
@@ -834,7 +887,7 @@ const inlineStaticMap: string = staticEntries
 
 // The worker entry imports the pre-bundled dispatcher modules via their output
 // paths, then wraps everything with the Node shim + fetch handler.
-const workerSrc     = makeWorkerEntrySource(hasApi, hasPages, inlineStaticMap);
+const workerSrc     = makeWorkerEntrySource(hasApi, hasPages, inlineStaticMap, cfMiddlewarePath);
 const workerSrcPath = path.join(
   OUTPUT_DIR,
   `_cf_worker_entry_${randomBytes(4).toString('hex')}.ts`,
