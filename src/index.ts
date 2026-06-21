@@ -1,5 +1,5 @@
 // ─── Client state management ────────────────────────────────────────────────
-export { createStore, useStore } from './store';
+export { createStore, createPersistedStore, useStore } from './store';
 export type { Store } from './store';
 
 // ─── Client-side hooks & components ────────────────────────────────────────

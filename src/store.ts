@@ -81,6 +81,7 @@ interface StoreEntry<T> {
 declare global {
   interface Window {
     __nukeStores?: Map<string, StoreEntry<any>>;
+    __nukePersisted?: Set<string>;
   }
 }
 
@@ -148,6 +149,80 @@ export function createStore<T extends object>(name: string, initialState: T): St
   };
 
   return { name, initialState, getState, setState, subscribe };
+}
+
+// ─── createPersistedStore ──────────────────────────────────────────────────────
+
+/**
+ * Creates a `Store` that survives full page refreshes by mirroring its state
+ * into `localStorage` (or `sessionStorage`).
+ *
+ * A plain `createStore` only lives in `window.__nukeStores`, which is wiped
+ * on every hard reload — fine for SPA navigations, not for data you want to
+ * keep around. `createPersistedStore` wraps `createStore` and:
+ *
+ *   1. On first creation in the browser, reads any previously saved value
+ *      from storage and applies it via `setState`.
+ *   2. Subscribes to the store and writes the new state to storage on every
+ *      change.
+ *
+ * `store.initialState` (used by `useStore` as the SSR snapshot) is left
+ * untouched as the value you passed in — the persisted value is applied
+ * *after* creation via `setState`, not by changing `initialState`. This
+ * keeps the server-rendered HTML and the client's first hydration pass in
+ * sync (no hydration mismatch); components simply re-render with the
+ * persisted value immediately after mount, the same way `useSyncExternalStore`
+ * already reconciles store mutations.
+ *
+ * Because `createStore` itself is idempotent per `name` but storage I/O is
+ * not, a `window.__nukePersisted` set guards against re-running the
+ * read/subscribe wiring if multiple bundles import the same persisted store.
+ *
+ * @param name          Unique store key — also used to derive the storage key.
+ * @param initialState  Default state used when nothing is in storage yet.
+ * @param options.storage  `'local'` (default) or `'session'`.
+ * @param options.key      Override the storage key (defaults to `nuke-store:${name}`).
+ *
+ * @example
+ * export const cartStore = createPersistedStore('cart', { items: [], total: 0 })
+ *
+ * @example
+ * // Cleared when the tab closes, kept across refreshes within the session
+ * export const draftStore = createPersistedStore('draft', { text: '' }, { storage: 'session' })
+ */
+export function createPersistedStore<T extends object>(
+  name: string,
+  initialState: T,
+  options?: { storage?: 'local' | 'session'; key?: string },
+): Store<T> {
+  const store = createStore(name, initialState);
+
+  if (typeof window === 'undefined') return store;
+
+  const storageKey = options?.key ?? `nuke-store:${name}`;
+  const backend = options?.storage === 'session' ? window.sessionStorage : window.localStorage;
+
+  if (!window.__nukePersisted) window.__nukePersisted = new Set();
+  if (window.__nukePersisted.has(storageKey)) return store;
+  window.__nukePersisted.add(storageKey);
+
+  try {
+    const raw = backend.getItem(storageKey);
+    if (raw !== null) store.setState(JSON.parse(raw) as T);
+  } catch {
+    // Corrupt or unparsable data — fall back to initialState.
+  }
+
+  store.subscribe(() => {
+    try {
+      backend.setItem(storageKey, JSON.stringify(store.getState()));
+    } catch {
+      // Storage full, disabled, or in a context (e.g. private mode) that
+      // throws on write — fail silently rather than crash the app.
+    }
+  });
+
+  return store;
 }
 
 // ─── useStore ─────────────────────────────────────────────────────────────────
