@@ -428,7 +428,61 @@ cartStore.setState(s => ({ ...s, total: s.total + 5 }));
 | `store.setState(updater)` | Updates state and notifies all subscribers |
 | `store.subscribe(listener)` | Registers a listener; returns an unsubscribe function |
 
+### createPersistedStore
 
+`createPersistedStore` is a drop-in replacement for `createStore` that survives full page refreshes by mirroring state into `localStorage` (or `sessionStorage`). A plain `createStore` lives only in `window.__nukeStores` and is wiped on every hard reload — fine for SPA navigations, not for data you want to keep around.
+
+```ts
+import { createPersistedStore } from 'nukejs';
+
+// Persists to localStorage under the key "nuke-store:cart"
+export const cartStore = createPersistedStore('cart', {
+  items: [] as CartItem[],
+  total: 0,
+});
+
+// Cleared when the tab closes, kept across refreshes within the session
+export const draftStore = createPersistedStore('draft', { text: '' }, {
+  storage: 'session',
+});
+
+// Custom storage key
+export const settingsStore = createPersistedStore('settings', { theme: 'light' }, {
+  key: 'my-app:settings',
+});
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `storage` | `'local' \| 'session'` | `'local'` | Storage backend — `localStorage` or `sessionStorage` |
+| `key` | `string` | `nuke-store:{name}` | Override the key used in storage |
+
+On first mount, the persisted value is read from storage and applied via `setState` immediately after the store is created. On every subsequent state change the new value is written back. The `initialState` you pass in is still used as the SSR snapshot, so there are no hydration mismatches — components simply re-render with the persisted value after mount.
+
+```tsx
+// app/components/ThemeToggle.tsx
+"use client";
+import { useStore } from 'nukejs';
+import { settingsStore } from '../stores/settings';
+
+export default function ThemeToggle() {
+  const { theme } = useStore(settingsStore);
+
+  return (
+    <button onClick={() =>
+      settingsStore.setState(s => ({ ...s, theme: s.theme === 'light' ? 'dark' : 'light' }))
+    }>
+      Switch to {theme === 'light' ? 'dark' : 'light'} mode
+    </button>
+  );
+}
+```
+
+The selected theme persists across hard reloads without any extra wiring.
+
+---
+
+## API Routes
 
 Export named HTTP method handlers from `.ts` files in your `server/` directory.
 
@@ -521,6 +575,66 @@ export default async function middleware(
 ```
 
 If `res.end()` (or `res.json()`) is called, NukeJS stops processing and does not handle the request through routing. If middleware returns without ending the response, the request continues to API routes or SSR.
+
+### URL rewriting
+
+Middleware can transparently rewrite the incoming URL by mutating `req.url`. The rewritten URL is used for routing — the browser's address bar is unchanged:
+
+```ts
+// middleware.ts
+import type { IncomingMessage, ServerResponse } from 'http';
+
+export default async function middleware(req: IncomingMessage, res: ServerResponse) {
+  // Redirect legacy paths to their new equivalents without a browser redirect
+  if (req.url === '/old-page') {
+    req.url = '/new-page'; // routed to app/pages/new-page.tsx, URL stays /old-page
+  }
+
+  // Normalize trailing slashes
+  if (req.url && req.url !== '/' && req.url.endsWith('/')) {
+    req.url = req.url.slice(0, -1);
+  }
+}
+```
+
+### CORS & OPTIONS handling
+
+A common pattern for API routes is to set CORS headers and short-circuit `OPTIONS` preflight requests in middleware:
+
+```ts
+// middleware.ts
+import type { IncomingMessage, ServerResponse } from 'http';
+
+export default async function middleware(req: IncomingMessage, res: ServerResponse) {
+  if (req.url?.startsWith('/api/')) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      res.end();
+      return; // short-circuits routing
+    }
+  }
+}
+```
+
+### Maintenance mode
+
+```ts
+// middleware.ts
+import type { IncomingMessage, ServerResponse } from 'http';
+
+export default async function middleware(req: IncomingMessage, res: ServerResponse) {
+  // Bypass maintenance for internal NukeJS routes (/__hmr, /__client-component/*)
+  if (process.env.MAINTENANCE_MODE === 'true' && !req.url?.startsWith('/__')) {
+    res.statusCode = 503;
+    res.setHeader('Content-Type', 'text/html');
+    res.end('<h1>503 — Down for maintenance</h1><p>Back shortly.</p>');
+  }
+}
+```
 
 ---
 
@@ -664,6 +778,33 @@ useHtml({
 
 Both head and body scripts are re-executed on every HMR update and SPA navigation so they always reflect the current page state.
 
+### Inline style injection
+
+The `style` option injects `<style>` blocks into `<head>`. This is useful for critical CSS that must be present before first paint, or for component-scoped styles that vary per page:
+
+```tsx
+// app/pages/dashboard.tsx
+import { useHtml } from 'nukejs';
+
+export default function Dashboard() {
+  useHtml({
+    style: [
+      { content: `.chart { height: 400px; }` },
+      { content: `.sidebar { width: 260px; }`, media: '(min-width: 768px)' },
+    ],
+  });
+
+  return <main>...</main>;
+}
+```
+
+Each `StyleTag` entry supports:
+
+| Field | Type | Description |
+|---|---|---|
+| `content` | `string` | Raw CSS injected inside a `<style>` block |
+| `media` | `string` | Optional `media` attribute (e.g. `'print'`, `'(prefers-color-scheme: dark)'`) |
+
 ---
 
 ## Configuration
@@ -708,7 +849,23 @@ export default function Nav() {
 }
 ```
 
+`<Link>` accepts a `className` prop for styling:
+
+```tsx
+<Link href="/pricing" className="nav-link nav-link--active">
+  Pricing
+</Link>
+```
+
+| Prop | Type | Description |
+|---|---|---|
+| `href` | `string` | Destination URL |
+| `children` | `React.ReactNode` | Link content |
+| `className` | `string` (optional) | CSS class(es) applied to the underlying `<a>` element |
+
 ### useRouter
+
+`useRouter()` gives client components programmatic control over navigation. It can only be used inside `"use client"` components.
 
 ```tsx
 "use client";
@@ -720,6 +877,93 @@ export default function SearchForm() {
     <button onClick={() => router.push('/results?q=nuke')}>
       Search
     </button>
+  );
+}
+```
+
+The hook returns an object with the following properties and methods:
+
+| | Type | Description |
+|---|---|---|
+| `router.path` | `string` | The current pathname — reactive, updates on every SPA navigation |
+| `router.push(url)` | `(url: string) => void` | Navigate to a new URL, adding an entry to the browser history |
+| `router.replace(url)` | `(url: string) => void` | Navigate without adding a history entry (replaces the current one) |
+| `router.back()` | `() => void` | Go back one entry in the browser history (same as `window.history.back()`) |
+| `router.refresh()` | `() => void` | Re-trigger the current route without a URL change — useful after a mutation |
+
+#### `router.replace` — navigation without a history entry
+
+Use `replace` when you want to update the URL (e.g. after a form submit or login redirect) without letting the user go "back" to the previous state:
+
+```tsx
+"use client";
+import { useRouter } from 'nukejs';
+
+export default function LoginForm() {
+  const router = useRouter();
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    await login();
+    router.replace('/dashboard'); // can't go back to /login
+  }
+
+  return <form onSubmit={handleSubmit}>...</form>;
+}
+```
+
+#### `router.back` — back button
+
+```tsx
+"use client";
+import { useRouter } from 'nukejs';
+
+export default function BackButton() {
+  const { back } = useRouter();
+  return <button onClick={back}>← Go back</button>;
+}
+```
+
+#### `router.refresh` — re-render after a mutation
+
+`refresh` replays the current route without changing the URL. Use it after a server mutation to re-fetch and display the updated data:
+
+```tsx
+"use client";
+import { useRouter } from 'nukejs';
+
+export default function DeleteButton({ postId }: { postId: string }) {
+  const { refresh } = useRouter();
+
+  async function handleDelete() {
+    await fetch(`/api/posts/${postId}`, { method: 'DELETE' });
+    refresh(); // re-renders the page so the deleted post disappears
+  }
+
+  return <button onClick={handleDelete}>Delete post</button>;
+}
+```
+
+#### `router.path` — reactive current path
+
+`router.path` stays in sync with the current pathname across SPA navigations — no `window.location` polling required:
+
+```tsx
+"use client";
+import { useRouter } from 'nukejs';
+
+export default function NavLink({ href, label }: { href: string; label: string }) {
+  const { path, push } = useRouter();
+  const isActive = path === href;
+
+  return (
+    <a
+      href={href}
+      onClick={(e) => { e.preventDefault(); push(href); }}
+      style={{ fontWeight: isActive ? 'bold' : 'normal' }}
+    >
+      {label}
+    </a>
   );
 }
 ```
