@@ -16,11 +16,11 @@
  *                        buildCombinedBundle, copyPublicFiles
  */
 
-import fs from 'fs';
+import fs   from 'fs';
 import path from 'path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes }            from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { build } from 'esbuild';
+import { build }                  from 'esbuild';
 import { findClientComponentsInTree } from './component-analyzer';
 
 // ─── Node built-in externals ──────────────────────────────────────────────────
@@ -101,9 +101,9 @@ export function analyzeFile(relPath: string, prefix = 'api'): AnalyzedRoute {
   let segments = normalized.split('/');
   if (segments.at(-1) === 'index') segments = segments.slice(0, -1);
 
-  const paramNames: string[] = [];
+  const paramNames:    string[] = [];
   const catchAllNames: string[] = [];
-  const regexParts: string[] = [];
+  const regexParts:    string[] = [];
   let specificity = 0;
 
   for (const seg of segments) {
@@ -275,7 +275,7 @@ export function collectServerPages(pagesDir: string): ServerPage[] {
  */
 export function collectGlobalClientRegistry(
   serverPages: ServerPage[],
-  pagesDir: string,
+  pagesDir:    string,
 ): Map<string, string> {
   const registry = new Map<string, string>();
   for (const { absPath } of serverPages) {
@@ -306,9 +306,9 @@ export function collectGlobalClientRegistry(
  * bundlePageHandler.
  */
 export function buildPerPageRegistry(
-  absPath: string,
+  absPath:     string,
   layoutPaths: string[],
-  pagesDir: string,
+  pagesDir:    string,
 ): { registry: Map<string, string>; clientComponentNames: Record<string, string> } {
   const registry = new Map<string, string>();
 
@@ -338,14 +338,14 @@ export function buildPerPageRegistry(
  *             handler and returns the results as `BuiltPage[]`.
  */
 export interface BuildPagesResult {
-  pages: BuiltPage[];
+  pages:  BuiltPage[];
   has404: boolean;
   has500: boolean;
 }
 
 export async function buildPages(
-  pagesDir: string,
-  staticDir: string,
+  pagesDir:     string,
+  staticDir:    string,
   outPagesDir?: string,
 ): Promise<BuildPagesResult> {
   const serverPages = collectServerPages(pagesDir);
@@ -361,8 +361,8 @@ export async function buildPages(
     return { pages: [], ...errorResult };
   }
 
-  const globalRegistry = collectGlobalClientRegistry(serverPages, pagesDir);
-  const prerenderedHtml = await bundleClientComponents(globalRegistry, pagesDir, staticDir);
+  const globalRegistry    = collectGlobalClientRegistry(serverPages, pagesDir);
+  const prerenderedHtml   = await bundleClientComponents(globalRegistry, pagesDir, staticDir);
   const prerenderedRecord = Object.fromEntries(prerenderedHtml);
 
   const builtPages: BuiltPage[] = [];
@@ -374,14 +374,14 @@ export async function buildPages(
     const { registry, clientComponentNames } = buildPerPageRegistry(page.absPath, layoutPaths, pagesDir);
 
     const bundleText = await bundlePageHandler({
-      absPath: page.absPath,
+      absPath:              page.absPath,
       pagesDir,
       clientComponentNames,
-      allClientIds: [...registry.keys()],
+      allClientIds:         [...registry.keys()],
       layoutPaths,
-      prerenderedHtml: prerenderedRecord,
-      routeParamNames: page.paramNames,
-      catchAllNames: page.catchAllNames,
+      prerenderedHtml:      prerenderedRecord,
+      routeParamNames:      page.paramNames,
+      catchAllNames:        page.catchAllNames,
     });
 
     builtPages.push({ ...page, bundleText });
@@ -647,8 +647,8 @@ function minifyHtml(h: string): string {
   });
   const minified = withoutPres
     .replace(/<!--(?!(n-head|\\/n-head|n-body-scripts|\\/n-body-scripts|n-pre-))[\\s\\S]*?-->/g, '')
-    .replace(/>\\s+</g, '> <')
-    .replace(/\\s*\\n\\s*/g, '')
+    .replace(/\\s*\\n\\s*/g, ' ')
+    .replace(/>\\s+</g, '><')
     .trim();
   return pres.length === 0
     ? minified
@@ -924,12 +924,12 @@ export async function bundleApiHandler(absPath: string): Promise<string> {
   try {
     const result = await build({
       entryPoints: [adapterPath],
-      bundle: true,
-      format: 'esm',
-      platform: 'node',
-      target: 'node20',
-      packages: 'external',
-      write: false,
+      bundle:      true,
+      format:      'esm',
+      platform:    'node',
+      target:      'node20',
+      packages:    'external',
+      write:       false,
     });
     text = result.outputFiles[0].text;
   } finally {
@@ -939,16 +939,16 @@ export async function bundleApiHandler(absPath: string): Promise<string> {
 }
 
 export interface PageBundleOptions {
-  absPath: string;
-  pagesDir: string;
+  absPath:              string;
+  pagesDir:             string;
   clientComponentNames: Record<string, string>;
-  allClientIds: string[];
-  layoutPaths: string[];
-  prerenderedHtml: Record<string, string>;
-  routeParamNames: string[];
-  catchAllNames: string[];
+  allClientIds:         string[];
+  layoutPaths:          string[];
+  prerenderedHtml:      Record<string, string>;
+  routeParamNames:      string[];
+  catchAllNames:        string[];
   /** HTTP status code for the response (default 200). */
-  statusCode?: number;
+  statusCode?:          number;
 }
 
 /**
@@ -963,7 +963,7 @@ export async function bundlePageHandler(opts: PageBundleOptions): Promise<string
     statusCode,
   } = opts;
 
-  const adapterDir = path.dirname(absPath);
+  const adapterDir  = path.dirname(absPath);
   const adapterPath = path.join(adapterDir, `_page_adapter_${randomBytes(4).toString('hex')}.ts`);
 
   const layoutImports = layoutPaths
@@ -974,11 +974,11 @@ export async function bundlePageHandler(opts: PageBundleOptions): Promise<string
     .join('\n');
 
   fs.writeFileSync(adapterPath, makePageAdapterSource({
-    pageImport: JSON.stringify('./' + path.basename(absPath)),
+    pageImport:           JSON.stringify('./' + path.basename(absPath)),
     layoutImports,
     clientComponentNames,
     allClientIds,
-    layoutArrayItems: layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
+    layoutArrayItems:     layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
     prerenderedHtml,
     routeParamNames,
     catchAllNames,
@@ -989,15 +989,15 @@ export async function bundlePageHandler(opts: PageBundleOptions): Promise<string
   try {
     const result = await build({
       entryPoints: [adapterPath],
-      bundle: true,
-      format: 'esm',
-      platform: 'node',
-      target: 'node20',
-      jsx: 'automatic',
-      packages: 'external',
-      external: NODE_BUILTINS,
-      define: { 'process.env.NODE_ENV': '"production"' },
-      write: false,
+      bundle:      true,
+      format:      'esm',
+      platform:    'node',
+      target:      'node20',
+      jsx:         'automatic',
+      packages:    'external',
+      external:    NODE_BUILTINS,
+      define:      { 'process.env.NODE_ENV': '"production"' },
+      write:       false,
     });
     text = result.outputFiles[0].text;
   } finally {
@@ -1024,8 +1024,8 @@ export async function bundlePageHandler(opts: PageBundleOptions): Promise<string
  */
 export async function bundleClientComponents(
   globalRegistry: Map<string, string>,
-  pagesDir: string,
-  staticDir: string,
+  pagesDir:        string,
+  staticDir:       string,
 ): Promise<Map<string, string>> {
   if (globalRegistry.size === 0) return new Map();
 
@@ -1043,20 +1043,20 @@ export async function bundleClientComponents(
 
   await build({
     entryPoints,
-    bundle: true,
-    splitting: true,            // ← shared deps extracted into chunks
-    format: 'esm',           // splitting requires ESM
-    platform: 'browser',
-    jsx: 'automatic',
-    minify: true,
-    write: true,            // splitting requires write:true + outdir
-    outdir: outDir,
-    conditions: ['module', 'browser', 'import'],
-    banner: { js: 'const require=(m)=>{if(m===\'react\')return window.__nukejs_react__;if(m===\'react/jsx-runtime\')return window.__nukejs_jsx__;throw new Error(\'Dynamic require of "\'+m+\'" is not supported\');};' },
-    external: ['react', 'react-dom/client', 'react/jsx-runtime'],
-    define: { 'process.env.NODE_ENV': '"production"' },
-    entryNames: '[name]',        // cc_abc123.js (no hash on entries)
-    chunkNames: '__chunks/[hash]', // __chunks/ABCDEF.js
+    bundle:      true,
+    splitting:   true,            // ← shared deps extracted into chunks
+    format:      'esm',           // splitting requires ESM
+    platform:    'browser',
+    jsx:         'automatic',
+    minify:      true,
+    write:       true,            // splitting requires write:true + outdir
+    outdir:      outDir,
+    conditions:  ['module', 'browser', 'import'],
+    banner:      { js: 'const require=(m)=>{if(m===\'react\')return window.__nukejs_react__;if(m===\'react/jsx-runtime\')return window.__nukejs_jsx__;throw new Error(\'Dynamic require of "\'+m+\'" is not supported\');};' },
+    external:    ['react', 'react-dom/client', 'react/jsx-runtime'],
+    define:      { 'process.env.NODE_ENV': '"production"' },
+    entryNames:  '[name]',        // cc_abc123.js (no hash on entries)
+    chunkNames:  '__chunks/[hash]', // __chunks/ABCDEF.js
   });
 
   console.log(`  bundled   ${globalRegistry.size} client component(s) → ${path.relative(process.cwd(), outDir)}/`);
@@ -1074,20 +1074,20 @@ export async function bundleClientComponents(
     try {
       const ssrResult = await build({
         entryPoints: [filePath],
-        bundle: true,
-        format: 'esm',
-        platform: 'node',
-        target: 'node20',
-        jsx: 'automatic',
-        packages: 'external',
-        define: { 'process.env.NODE_ENV': '"production"' },
-        write: false,
+        bundle:      true,
+        format:      'esm',
+        platform:    'node',
+        target:      'node20',
+        jsx:         'automatic',
+        packages:    'external',
+        define:      { 'process.env.NODE_ENV': '"production"' },
+        write:       false,
       });
       fs.writeFileSync(ssrTmp, ssrResult.outputFiles[0].text);
 
       const { default: Component } = await import(pathToFileURL(ssrTmp).href);
-      const { createElement } = await import('react');
-      const { renderToString } = await import('react-dom/server');
+      const { createElement }      = await import('react');
+      const { renderToString }     = await import('react-dom/server');
 
       prerendered.set(id, renderToString(createElement(Component, {})));
       console.log(`  prerendered       ${id}`);
@@ -1116,8 +1116,8 @@ export interface BuiltErrorPages {
  * pages are already present in prerenderedHtml.
  */
 export async function buildErrorPages(
-  pagesDir: string,
-  outPagesDir: string,
+  pagesDir:        string,
+  outPagesDir:     string,
   prerenderedHtml: Record<string, string>,
 ): Promise<BuiltErrorPages> {
   const result: BuiltErrorPages = { has404: false, has500: false };
@@ -1132,14 +1132,14 @@ export async function buildErrorPages(
     const { registry, clientComponentNames } = buildPerPageRegistry(src, layoutPaths, pagesDir);
 
     const bundleText = await bundlePageHandler({
-      absPath: src,
+      absPath:              src,
       pagesDir,
       clientComponentNames,
-      allClientIds: [...registry.keys()],
+      allClientIds:         [...registry.keys()],
       layoutPaths,
       prerenderedHtml,
-      routeParamNames: [],
-      catchAllNames: [],
+      routeParamNames:      [],
+      catchAllNames:        [],
       statusCode,
     });
 
@@ -1157,7 +1157,7 @@ export async function buildErrorPages(
  * runtime + NukeJS client runtime in a single file.
  */
 export async function buildCombinedBundle(staticDir: string): Promise<void> {
-  const nukeDir = path.dirname(fileURLToPath(import.meta.url));
+  const nukeDir    = path.dirname(fileURLToPath(import.meta.url));
   const bundleFile = nukeDir.endsWith('dist') ? 'bundle' : 'bundle.ts';
 
   const result = await build({
@@ -1190,17 +1190,17 @@ export default React;
 window.__nukejs_react__ = React;
 window.__nukejs_jsx__   = { jsx, jsxs };
 `,
-      loader: 'ts',
+      loader:     'ts',
       resolveDir: nukeDir,
     },
-    bundle: true,
-    write: false,
+    bundle:      true,
+    write:       false,
     treeShaking: true,
-    minify: true,
-    format: 'esm',
-    jsx: 'automatic',
+    minify:      true,
+    format:      'esm',
+    jsx:         'automatic',
     alias: {
-      react: path.dirname(fileURLToPath(import.meta.resolve('react/package.json'))),
+      react:       path.dirname(fileURLToPath(import.meta.resolve('react/package.json'))),
       'react-dom': path.dirname(fileURLToPath(import.meta.resolve('react-dom/package.json'))),
     },
     define: { 'process.env.NODE_ENV': '"production"' },
