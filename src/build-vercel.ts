@@ -32,6 +32,7 @@ import {
   findPageLayouts,
   buildPerPageRegistry,
   makePageAdapterSource,
+  buildClientComponentTagImports,
   buildCombinedBundle,
   copyPublicFiles,
 } from './build-common';
@@ -416,14 +417,15 @@ if (serverPages.length > 0 || hasErrorPages) {
     fs.writeFileSync(
       adapterPath,
       makePageAdapterSource({
-        pageImport:           JSON.stringify('./' + path.basename(page.absPath)),
+        pageImport:                JSON.stringify('./' + path.basename(page.absPath)),
         layoutImports,
         clientComponentNames,
-        allClientIds:         [...registry.keys()],
-        layoutArrayItems:     layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
-        prerenderedHtml:      prerenderedRecord,
-        routeParamNames:      page.paramNames,
-        catchAllNames:        page.catchAllNames,
+        clientComponentTagImports: buildClientComponentTagImports(registry, adapterDir),
+        allClientIds:              [...registry.keys()],
+        layoutArrayItems:          layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
+        prerenderedHtml:           prerenderedRecord,
+        routeParamNames:           page.paramNames,
+        catchAllNames:             page.catchAllNames,
       }),
     );
 
@@ -459,14 +461,15 @@ if (serverPages.length > 0 || hasErrorPages) {
       .join('\n');
 
     fs.writeFileSync(adapterPath, makePageAdapterSource({
-      pageImport:           JSON.stringify('./' + path.basename(src)),
+      pageImport:                JSON.stringify('./' + path.basename(src)),
       layoutImports,
       clientComponentNames,
-      allClientIds:         [...registry.keys()],
-      layoutArrayItems:     layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
-      prerenderedHtml:      prerenderedRecord,
-      routeParamNames:      [],
-      catchAllNames:        [],
+      clientComponentTagImports: buildClientComponentTagImports(registry, adapterDir),
+      allClientIds:              [...registry.keys()],
+      layoutArrayItems:          layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
+      prerenderedHtml:           prerenderedRecord,
+      routeParamNames:           [],
+      catchAllNames:             [],
       statusCode,
     }));
 

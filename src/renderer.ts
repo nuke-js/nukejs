@@ -241,13 +241,25 @@ async function renderFunctionComponent(
   const componentCache = getComponentCache();
 
   // Check whether this component function is a registered client component.
+  // We prefer an identity tag stamped onto the function object itself (see
+  // buildClientComponentTagImports in build-common.ts, used by production
+  // builds) because matching by `type.name` is fragile — it breaks the
+  // moment two components share a name, and breaks entirely once a bundler
+  // renames colliding identifiers. Dev mode never bundles, so name-matching
+  // still works here, but we tag on first match so any downstream code
+  // (or a future render of the same component) can rely on the tag too.
   for (const [id, filePath] of ctx.registry.entries()) {
     const info = componentCache.get(filePath);
     if (!info?.isClientComponent) continue;
 
-    // Match by default export function name (cached — handles both source and
-    // esbuild-compiled formats; see component-analyzer.getExportedDefaultName).
-    if (!info.exportedName || type.name !== info.exportedName) continue;
+    if ((type as any).__nukeClientId === id) {
+      // Already tagged — fast, unambiguous match.
+    } else {
+      // Match by default export function name (cached — handles both source and
+      // esbuild-compiled formats; see component-analyzer.getExportedDefaultName).
+      if (!info.exportedName || type.name !== info.exportedName) continue;
+      (type as any).__nukeClientId = id;
+    }
 
     // This is a client boundary.
     try {
@@ -341,7 +353,8 @@ function serializeReactElement(element: any, registry: Map<string, string>): any
     for (const [id, filePath] of registry.entries()) {
       const info = componentCache.get(filePath);
       if (!info?.isClientComponent) continue;
-      if (info.exportedName && type.name === info.exportedName) {
+      if ((type as any).__nukeClientId === id || (info.exportedName && type.name === info.exportedName)) {
+        (type as any).__nukeClientId = id;
         return {
           __re:        'client',
           componentId: id,

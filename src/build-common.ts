@@ -376,8 +376,8 @@ export async function buildPages(
     const bundleText = await bundlePageHandler({
       absPath:              page.absPath,
       pagesDir,
+      registry,
       clientComponentNames,
-      allClientIds:         [...registry.keys()],
       layoutPaths,
       prerenderedHtml:      prerenderedRecord,
       routeParamNames:      page.paramNames,
@@ -473,6 +473,49 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 `;
 }
 
+// ─── Client component identity tagging ────────────────────────────────────────
+
+/**
+ * Generates import + tag statements that give every client component a
+ * stable, bundler-proof identity marker.
+ *
+ * Why this exists:
+ *   The production renderer used to look client components up by matching
+ *   the *runtime function name* (`type.name`) against a name recorded during
+ *   static analysis (`extractDefaultExportName`). That works fine unbundled,
+ *   but once esbuild bundles an entire page (plus its whole import graph)
+ *   into a single file, colliding identifiers get renamed — e.g. two
+ *   different `Header` symbols become `Header` and `Header2`. If the
+ *   component whose name changed was a "use client" boundary, the renderer's
+ *   name lookup silently fails and falls through to calling the component as
+ *   a plain function (`type(props)`), completely bypassing React's render
+ *   pipeline. Any hook inside then crashes with something like
+ *   "Cannot read properties of null (reading 'useRef')", because React's
+ *   internal hook dispatcher was never set up.
+ *
+ * The fix: import each client component directly (by its resolved absolute
+ * path — ESM guarantees this resolves to the exact same module instance the
+ * page's own import graph uses, even after bundling/minification) and stamp
+ * a non-enumerable id directly onto the function object itself. Renaming a
+ * local variable doesn't change the object it points to, so
+ * `fn.__nukeClientId` survives bundling intact. The renderer then checks
+ * this tag first, falling back to the old name-based lookup only as a safety
+ * net for the rare case a component couldn't be statically resolved here.
+ */
+export function buildClientComponentTagImports(
+  registry:   Map<string, string>,
+  adapterDir: string,
+): string {
+  return [...registry.entries()]
+    .map(([id, absPath], i) => {
+      const rel = path.relative(adapterDir, absPath).replace(/\\/g, '/');
+      const spec = JSON.stringify(rel.startsWith('.') ? rel : './' + rel);
+      return `import __cc_tag_${i}__ from ${spec};\n` +
+        `if (typeof __cc_tag_${i}__ === 'function') (__cc_tag_${i}__ as any).__nukeClientId = ${JSON.stringify(id)};`;
+    })
+    .join('\n');
+}
+
 // ─── Page adapter template ────────────────────────────────────────────────────
 
 export interface PageAdapterOptions {
@@ -480,8 +523,13 @@ export interface PageAdapterOptions {
   pageImport: string;
   /** Newline-joined import statements for layout components */
   layoutImports: string;
-  /** function-name → cc_id map, computed at build time */
+  /** function-name → cc_id map, computed at build time (fallback only — see clientComponentTagImports) */
   clientComponentNames: Record<string, string>;
+  /**
+   * Newline-joined import + identity-tag statements, one per client
+   * component reachable from this page. See buildClientComponentTagImports.
+   */
+  clientComponentTagImports: string;
   /** All client component IDs reachable from this page */
   allClientIds: string[];
   /** Comma-separated list of __layout_N__ identifiers */
@@ -508,14 +556,16 @@ export interface PageAdapterOptions {
  * The adapter:
  *   • Inlines the html-store so useHtml() works without external deps.
  *   • Contains an async recursive renderer for server + client components.
- *   • Client components are identified via the pre-computed CLIENT_COMPONENTS
- *     map — no fs.readFileSync at runtime.
+ *   • Client components are identified primarily by an identity tag stamped
+ *     directly onto their function object (see buildClientComponentTagImports),
+ *     with the pre-computed CLIENT_COMPONENTS name map kept only as a
+ *     fallback — no fs.readFileSync at runtime.
  *   • Emits the full HTML document including the __n_data blob and bootstrap.
  */
 export function makePageAdapterSource(opts: PageAdapterOptions): string {
   const {
-    pageImport, layoutImports, clientComponentNames, allClientIds,
-    layoutArrayItems, prerenderedHtml, routeParamNames, catchAllNames,
+    pageImport, layoutImports, clientComponentNames, clientComponentTagImports,
+    allClientIds, layoutArrayItems, prerenderedHtml, routeParamNames, catchAllNames,
     statusCode = 200,
   } = opts;
 
@@ -525,6 +575,7 @@ import { createElement as __createElement__ } from 'react';
 import { renderToString as __renderToString__ } from 'react-dom/server';
 import * as __page__ from ${pageImport};
 ${layoutImports}
+${clientComponentTagImports}
 
 const CLIENT_COMPONENTS: Record<string, string> = ${JSON.stringify(clientComponentNames)};
 const ALL_CLIENT_IDS: string[] = ${JSON.stringify(allClientIds)};
@@ -709,7 +760,7 @@ function serializeProps(value: any): any {
     const { type, props: p } = value as any;
     if (typeof type === 'string') return { __re: 'html', tag: type, props: serializeProps(p) };
     if (typeof type === 'function') {
-      const cid = CLIENT_COMPONENTS[type.name];
+      const cid = (type as any).__nukeClientId ?? CLIENT_COMPONENTS[type.name];
       if (cid) return { __re: 'client', componentId: cid, props: serializeProps(p) };
     }
     return undefined;
@@ -758,7 +809,7 @@ async function renderNode(node: any, hydrated: Set<string>): Promise<string> {
   }
 
   if (typeof type === 'function') {
-    const clientId = CLIENT_COMPONENTS[type.name];
+    const clientId = (type as any).__nukeClientId ?? CLIENT_COMPONENTS[type.name];
     if (clientId) {
       hydrated.add(clientId);
       const { wrapperAttrs, componentProps } = splitWrapperAttrs(props);
@@ -941,8 +992,9 @@ export async function bundleApiHandler(absPath: string): Promise<string> {
 export interface PageBundleOptions {
   absPath:              string;
   pagesDir:             string;
+  /** id → absolute file path for every client component reachable from this page. */
+  registry:             Map<string, string>;
   clientComponentNames: Record<string, string>;
-  allClientIds:         string[];
   layoutPaths:          string[];
   prerenderedHtml:      Record<string, string>;
   routeParamNames:      string[];
@@ -958,7 +1010,7 @@ export interface PageBundleOptions {
  */
 export async function bundlePageHandler(opts: PageBundleOptions): Promise<string> {
   const {
-    absPath, clientComponentNames, allClientIds,
+    absPath, registry, clientComponentNames,
     layoutPaths, prerenderedHtml, routeParamNames, catchAllNames,
     statusCode,
   } = opts;
@@ -974,11 +1026,12 @@ export async function bundlePageHandler(opts: PageBundleOptions): Promise<string
     .join('\n');
 
   fs.writeFileSync(adapterPath, makePageAdapterSource({
-    pageImport:           JSON.stringify('./' + path.basename(absPath)),
+    pageImport:                JSON.stringify('./' + path.basename(absPath)),
     layoutImports,
     clientComponentNames,
-    allClientIds,
-    layoutArrayItems:     layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
+    clientComponentTagImports: buildClientComponentTagImports(registry, adapterDir),
+    allClientIds:              [...registry.keys()],
+    layoutArrayItems:          layoutPaths.map((_, i) => `__layout_${i}__`).join(', '),
     prerenderedHtml,
     routeParamNames,
     catchAllNames,
@@ -1134,8 +1187,8 @@ export async function buildErrorPages(
     const bundleText = await bundlePageHandler({
       absPath:              src,
       pagesDir,
+      registry,
       clientComponentNames,
-      allClientIds:         [...registry.keys()],
       layoutPaths,
       prerenderedHtml,
       routeParamNames:      [],
